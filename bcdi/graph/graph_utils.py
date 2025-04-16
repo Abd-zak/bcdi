@@ -2171,7 +2171,7 @@ def save_to_vti(
         first_array = tuple_array[0]
         is_amp = False
 
-    first_arr = np.transpose(np.flip(first_array, 2)).reshape(first_array.size)
+    first_arr = np.flip(np.transpose(np.flip(first_array, 2)),axis=0).reshape(first_array.size)
     first_arr = numpy_support.numpy_to_vtk(first_arr)
     pd = image_data.GetPointData()
     pd.SetScalars(first_arr)
@@ -2186,7 +2186,7 @@ def save_to_vti(
                 first_array == 0
             ] = 0  # use the thresholded amplitude as a support
             # in order to save disk space
-        temp_array = np.transpose(np.flip(temp_array, 2)).reshape(temp_array.size)
+        temp_array = np.flip(np.transpose(np.flip(temp_array, 2)),axis=0).reshape(temp_array.size)
         temp_array = numpy_support.numpy_to_vtk(temp_array)
         pd.AddArray(temp_array)
         pd.GetArray(counter).SetName(tuple_fieldnames[idx])
