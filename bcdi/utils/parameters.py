@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-present : DESY PHOTON SCIENCE
@@ -213,7 +211,7 @@ class CDIPreprocessingChecker(ConfigChecker):
     """Configure preprocessing-dependent parameters for the 'CDI' case."""
 
     def _configure_params(self) -> None:
-        """Hard-code processing-dependent parameter configuration."""
+        """Hard-coded processing-dependent parameter configuration."""
         self._checked_params["roi_detector"] = self._create_roi()
         if self._checked_params["photon_filter"] == "loading":
             self._checked_params["loading_threshold"] = self._checked_params[
@@ -284,7 +282,7 @@ class PreprocessingChecker(ConfigChecker):
     """Configure preprocessing-dependent parameters."""
 
     def _configure_params(self) -> None:
-        """Hard-code processing-dependent parameter configuration."""
+        """Hard-coded processing-dependent parameter configuration."""
         if self._nb_scans is not None and self._nb_scans > 1:
             if self._checked_params["center_fft"] not in [
                 "crop_asymmetric_ZYX",
@@ -388,8 +386,20 @@ class PreprocessingChecker(ConfigChecker):
 class PostprocessingChecker(ConfigChecker):
     """Configure postprocessing-dependent parameters."""
 
+    def check_config(self) -> Dict[str, Any]:
+        """Check if the provided config is consistent."""
+        super().check_config()
+        if (
+            self._checked_params["rocking_angle"] == "energy"
+            and self._checked_params["data_frame"] == "detector"
+        ):
+            raise NotImplementedError(
+                "Energy scans must be interpolated during preprocessing."
+            )
+        return self._checked_params
+
     def _configure_params(self) -> None:
-        """Hard-code processing-dependent parameter configuration."""
+        """Hard-coded processing-dependent parameter configuration."""
         if self._nb_scans is not None and self._nb_scans > 1:
             self._checked_params["backend"] = "Agg"
             if self._checked_params["multiprocessing"] and any(
@@ -486,8 +496,6 @@ def valid_param(key: str, value: Any) -> Tuple[Any, bool]:
         "use_rawdata",
     }:
         valid.valid_item(value, allowed_types=bool, name=key)
-    elif key == "absorption":
-        valid.valid_item(value, allowed_types=Real, min_excluded=0, name=key)
     elif key == "actuators":
         valid.valid_container(value, container_types=dict, allow_none=True, name=key)
     elif key == "apodization_alpha":
@@ -733,9 +741,13 @@ def valid_param(key: str, value: Any) -> Tuple[Any, bool]:
         )
     elif key == "frames_pattern":
         if value is not None:
-            value = np.asarray(value)
-            valid.valid_1d_array(
-                value, allow_none=False, allowed_values={0, 1}, name=key
+            valid.valid_container(
+                value,
+                container_types=list,
+                item_types=int,
+                allow_none=False,
+                min_included=0,
+                name=key,
             )
     elif key == "half_width_avg_phase":
         valid.valid_item(value, allowed_types=int, min_included=0, name=key)
@@ -840,6 +852,8 @@ def valid_param(key: str, value: Any) -> Tuple[Any, bool]:
             raise ParameterError(key, value, allowed)
     elif key == "photon_threshold":
         valid.valid_item(value, allowed_types=Real, min_included=0, name=key)
+    elif key == "plot_margin":
+        valid.valid_item(value, allowed_types=int, min_included=0, name=key)
     elif key == "preprocessing_binning":
         valid.valid_container(
             value,
@@ -909,7 +923,7 @@ def valid_param(key: str, value: Any) -> Tuple[Any, bool]:
     elif key == "root_folder":
         valid.valid_container(value, container_types=str, min_length=1, name=key)
         if not os.path.isdir(value):
-            raise ValueError(f"The directory {value} does not exist")
+            raise ValueError(f"The directory '{value}' does not exist")
     elif key == "sample_inplane":
         valid.valid_container(
             value,

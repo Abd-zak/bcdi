@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Module for loading .nxs files from SIXS beamline @ SOLEIL
 # To be used together with the dictionnary 'alias_dict.txt'
 # Code from Andrea Resta @ Soleil Synchrotron
@@ -204,7 +203,6 @@ class DataSet:
 
         if pref.inamedisplay == 0:
             for i in range(self.nmotors - 1):  # pas la peine de faire le dernier point!
-
                 nickname = self.nodenicknames[i]
 
                 if nickname in self.nodenicknames[i + 1 :]:  # item in double

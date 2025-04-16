@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -409,7 +407,6 @@ class TestParameters(unittest.TestCase):
 
     def test_false_expected_1(self):
         val, flag = valid_param(key="align_axis", value="False")
-        print(val, flag)
         self.assertTrue(val is False and flag is True)
 
     def test_false_expected_2(self):
@@ -604,14 +601,23 @@ class TestParameters(unittest.TestCase):
         val, flag = valid_param(key="energy", value=[1, 2, 3])
         self.assertTrue(val == [1, 2, 3] and flag is True)
 
-    def test_frames_pattern(self):
-        correct = np.array([0, 1, 1, 0])
-        val, flag = valid_param(key="frames_pattern", value=[0, 1, 1, 0])
-        self.assertTrue(np.array_equal(val, correct) and flag is True)
+    def test_frames_pattern_binary_list(self):
+        expected = [0, 1, 1, 0]
+        output, flag = valid_param(key="frames_pattern", value=expected)
+        self.assertTrue(
+            all(val1 == val2 for val1, val2 in zip(expected, output)) and flag is True
+        )
 
     def test_frames_pattern_none(self):
         val, flag = valid_param(key="frames_pattern", value=None)
         self.assertTrue(val is None and flag is True)
+
+    def test_frames_pattern_list_of_indices(self):
+        expected = [126, 138]
+        output, flag = valid_param(key="frames_pattern", value=[126, 138])
+        self.assertTrue(
+            all(val1 == val2 for val1, val2 in zip(expected, output)) and flag is True
+        )
 
 
 if __name__ == "__main__":

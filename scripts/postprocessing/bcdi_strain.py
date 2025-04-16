@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
@@ -111,6 +110,9 @@ Usage:
      binning factors in each dimension used in preprocessing (not phase retrieval)
     :param output_size: e.g. [100, 100, 100]
      (z, y, x) Fix the size of the output array, leave None to use the object size
+    :plot_margin: e.g. 30
+     margin to add on each side of the smallest box around the crystal. Use this to
+     increase the box size in case the interpolated crystal is cropped.
     :param keep_size: e.g. False
      True to keep the initial array size for orthogonalization (slower), it will be
      cropped otherwise
@@ -362,8 +364,7 @@ Usage:
 """
 
 
-if __name__ == "__main__":
-
+def main():
     now = datetime.now()
     configure_logging()
     logging.info(f"Start script at {now}")
@@ -386,3 +387,7 @@ if __name__ == "__main__":
     logging.info(f"End of script at {now}")
     plt.ioff()
     plt.show()
+
+
+if __name__ == "__main__":
+    main()

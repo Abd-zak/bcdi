@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -52,15 +50,20 @@ API Reference
 import logging
 from abc import ABC, abstractmethod
 from numbers import Real
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 import numpy as np
 import xrayutilities as xu
 
+import bcdi.utils.format as fmt
 from bcdi.experiment.diffractometer import DiffractometerFactory
 from bcdi.experiment.loader import create_loader
 from bcdi.graph import graph_utils as gu
 from bcdi.utils import utilities as util
 from bcdi.utils import validation as valid
+
+if TYPE_CHECKING:
+    from bcdi.experiment.setup import Setup
 
 module_logger = logging.getLogger(__name__)
 
@@ -70,6 +73,10 @@ class Beamline(ABC):
     Base class for defining a beamline.
 
     :param name: name of the beamline
+    :param sample_offsets: list or tuple of angles in degrees, corresponding to
+     the offsets of each of the sample circles (the offset for the most outer circle
+     should be at index 0). The number of circles is beamline dependent. Convention:
+     the sample offsets will be subtracted to measurement the motor values.
     :param kwargs:
 
      - optional beamline-dependent parameters
@@ -84,19 +91,18 @@ class Beamline(ABC):
     # "x-" detector horizontal axis inboard, as it should be in the CXI convention
     # "y-" detector vertical axis down, as it should be in the CXI convention
 
-    def __init__(self, name, **kwargs):
+    def __init__(self, name, sample_offsets=None, **kwargs):
         self.logger = kwargs.get("logger", module_logger)
         self.name = name
         self.diffractometer = DiffractometerFactory().create_diffractometer(
-            name=name, **kwargs
+            name=name, sample_offsets=sample_offsets, **kwargs
         )
-        loader_kwargs = {"logger": self.logger} if kwargs.get("logger") else {}
         self.loader = create_loader(
             name=name,
             sample_offsets=self.diffractometer.sample_offsets,
-            **loader_kwargs,
+            **kwargs,
         )
-        self.sample_angles = None
+        self.sample_angles: Optional[Tuple[Union[float, List, np.ndarray]]] = None
 
     @property
     @abstractmethod
@@ -140,7 +146,7 @@ class Beamline(ABC):
         """
         Send all sample circles to zero degrees.
 
-        Arrays are rotatedsuch that all circles of the sample stage are at their zero
+        Arrays are rotated such that all circles of the sample stage are at their zero
         position.
 
         :param arrays: tuple of 3D real arrays of the same shape.
@@ -267,9 +273,44 @@ class Beamline(ABC):
          grazing incidence angles are the positions of circles below the rocking circle.
         """
 
-    @staticmethod
     @abstractmethod
-    def process_positions(setup, nb_frames, scan_number, frames_logical=None):
+    def inplane_coeff(self):
+        """
+        Coefficient related to the detector inplane orientation.
+
+        Define a coefficient +/- 1 depending on the detector inplane rotation direction
+        (1 for clockwise, -1 for anti-clockwise) and the detector inplane orientation
+        (1 for inboard, -1 for outboard).
+
+        For a SAXS Beamline it does not matter, the fixed detector inplane angle is 0.
+
+        :return: +1
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def outofplane_coeff(self):
+        """
+        Coefficient related to the detector inplane orientation.
+
+        Define a coefficient +/- 1 depending on the detector inplane rotation direction
+        (1 for clockwise, -1 for anti-clockwise) and the detector inplane orientation
+        (1 for inboard, -1 for outboard).
+
+        For a SAXS Beamline it does not matter, the fixed detector inplane angle is 0.
+
+        :return: +1
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def process_positions(
+        self,
+        setup: "Setup",
+        nb_frames: int,
+        scan_number: int,
+        frames_logical: Optional[np.ndarray] = None,
+    ) -> Any:
         """
         Load and crop/pad motor positions depending on the current number of frames.
 
@@ -302,7 +343,7 @@ class Beamline(ABC):
         Crop or pad array depending on how compare two numbers.
 
         Cropping or padding depends on the number of current frames compared to the
-        number of motor steps. For padding it assumes that array is linear in the
+        number of motor steps. For pading it assumes that array is linear in the
         angular_step.
 
         :param array: a 1D numpy array of motor values
@@ -338,7 +379,7 @@ class Beamline(ABC):
 
     def __repr__(self):
         """Representation string of the Beamline instance."""
-        return util.create_repr(self, Beamline)
+        return fmt.create_repr(self, Beamline)
 
     @property
     def sample_angles(self):
@@ -371,7 +412,7 @@ class BeamlineGoniometer(Beamline):
 
     def __init__(self, name, **kwargs):
         super().__init__(name, **kwargs)
-        self.detector_angles = None
+        self.detector_angles: Optional[Tuple[Union[float, List, np.ndarray]]] = None
 
     @property
     def detector_angles(self):
@@ -389,7 +430,9 @@ class BeamlineGoniometer(Beamline):
         )
         self._detector_angles = value
 
-    def exit_wavevector(self, wavelength, inplane_angle, outofplane_angle):
+    def exit_wavevector(
+        self, wavelength: float, inplane_angle: float, outofplane_angle: float
+    ) -> np.ndarray:
         """
         Calculate the exit wavevector kout.
 
@@ -404,7 +447,9 @@ class BeamlineGoniometer(Beamline):
         # look for the index of the inplane detector circle
         index = self.find_inplane()
 
-        factor = self.orientation_lookup[self.diffractometer.detector_circles[index]]
+        factor: int = self.orientation_lookup[
+            self.diffractometer.detector_circles[index]
+        ]
 
         kout = (
             2
@@ -424,7 +469,7 @@ class BeamlineGoniometer(Beamline):
         )
         return kout
 
-    def find_inplane(self):
+    def find_inplane(self) -> int:
         """
         Find the index of the detector inplane circle.
 
@@ -438,6 +483,8 @@ class BeamlineGoniometer(Beamline):
         for idx, val in enumerate(self.diffractometer.detector_circles):
             if val.startswith("y"):
                 index = idx
+        if index is None:
+            raise ValueError("detector inplane circle not found")
         return index
 
     def find_outofplane(self):
@@ -550,7 +597,7 @@ class BeamlineGoniometer(Beamline):
 
     def __repr__(self):
         """Representation string of the Beamline instance."""
-        return util.create_repr(self, BeamlineGoniometer)
+        return fmt.create_repr(self, BeamlineGoniometer)
 
     @abstractmethod
     def transformation_matrix(
@@ -662,3 +709,31 @@ class BeamlineSaxs(Beamline):
                 title="calculated polar radius for the 2D grid",
             )
         return interp_angle, interp_radius
+
+    def inplane_coeff(self):
+        """
+        Coefficient related to the detector inplane orientation.
+
+        Define a coefficient +/- 1 depending on the detector inplane rotation direction
+        (1 for clockwise, -1 for anti-clockwise) and the detector inplane orientation
+        (1 for inboard, -1 for outboard).
+
+        For a SAXS Beamline it does not matter, the fixed detector inplane angle is 0.
+
+        :return: +1
+        """
+        return 1
+
+    def outofplane_coeff(self):
+        """
+        Coefficient related to the detector inplane orientation.
+
+        Define a coefficient +/- 1 depending on the detector inplane rotation direction
+        (1 for clockwise, -1 for anti-clockwise) and the detector inplane orientation
+        (1 for inboard, -1 for outboard).
+
+        For a SAXS Beamline it does not matter, the fixed detector inplane angle is 0.
+
+        :return: +1
+        """
+        return 1

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -7,10 +5,6 @@
 #         Jerome Carnis, jerome.carnis@esrf.fr
 """Main runner for BCDI data postprocessing, after phase retrieval."""
 
-try:
-    import hdf5plugin  # for P10, should be imported before h5py or PyTables
-except ModuleNotFoundError:
-    pass
 import logging
 import multiprocessing as mp
 from typing import Any, Dict
@@ -19,22 +13,16 @@ import numpy as np
 
 import bcdi.utils.utilities as util
 from bcdi.postprocessing.process_scan import process_scan
+from bcdi.postprocessing.raw_orthogonalization import orthogonalize
 from bcdi.utils.parameters import PostprocessingChecker
 
 logger = logging.getLogger(__name__)
 
 
-def run(prm: Dict[str, Any]) -> None:
-    """
-    Run the postprocessing defined by the configuration parameters.
-
-    It assumes that the dictionary of parameters was validated via a ConfigChecker
-    instance.
-
-    :param prm: the parsed parameters
-    """
-    prm = PostprocessingChecker(
-        initial_params=prm,
+def initialize_parameters(parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """Configure and validate the existing dictionary of parameters."""
+    return PostprocessingChecker(
+        initial_params=parameters,
         default_values={
             "actuators": None,
             "align_axis": False,
@@ -87,6 +75,7 @@ def run(prm: Dict[str, Any]) -> None:
             "phase_ramp_removal": "gradient",
             "phase_range": np.pi / 2,
             "phasing_binning": [1, 1, 1],
+            "plot_margin": 10,
             "preprocessing_binning": [1, 1, 1],
             "ref_axis_q": "y",
             "reference_spacing": None,
@@ -96,6 +85,7 @@ def run(prm: Dict[str, Any]) -> None:
             "sample_offsets": None,
             "sample_outofplane": [0, 0, 1],
             "save": True,
+            "save_dirname": "result",
             "save_rawdata": False,
             "save_support": False,
             "skip_unwrap": False,
@@ -132,6 +122,30 @@ def run(prm: Dict[str, Any]) -> None:
         ),
     ).check_config()
 
+
+def run(prm: Dict[str, Any], procedure: str = "strain_computation") -> None:
+    """
+    Run the postprocessing defined by the configuration parameters.
+
+    It assumes that the dictionary of parameters was validated via a ConfigChecker
+    instance.
+
+    :param prm: the parsed parameters
+    :param procedure: "orthogonalization" to do only the interpolation,
+     "strain_computation" to use the full workflow
+    """
+    if procedure == "strain_computation":
+        process = process_scan
+    elif procedure == "orthogonalization":
+        process = orthogonalize
+    else:
+        raise NotImplementedError(
+            f"procedure {procedure} unknown, should be either "
+            "'strain_computation' or  'orthogonalize'"
+        )
+
+    prm = initialize_parameters(prm)
+
     ############################
     # start looping over scans #
     ############################
@@ -151,7 +165,7 @@ def run(prm: Dict[str, Any]) -> None:
                 f'\n{"#" * len(tmp_str)}\n' + tmp_str + "\n" + f'{"#" * len(tmp_str)}'
             )
             pool.apply_async(
-                process_scan,
+                process,
                 args=(scan_idx, prm),
                 callback=util.move_log,
                 error_callback=util.catch_error,
@@ -161,5 +175,5 @@ def run(prm: Dict[str, Any]) -> None:
         # until all processes in the queue are done.
     else:
         for scan_idx in range(nb_scans):
-            result = process_scan(scan_idx=scan_idx, prm=prm)
+            result = process(scan_idx=scan_idx, prm=prm)
             util.move_log(result)

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
@@ -247,11 +246,11 @@ shiftz, shifty, shiftx = reg.getimageregistration(amp_simu, abs(obj), precision=
 obj = reg.subpixel_shift(obj, shiftz, shifty, shiftx)
 print(
     "Shift calculated from dft registration: (",
-    str("{:.2f}".format(shiftz)),
+    str(f"{shiftz:.2f}"),
     ",",
-    str("{:.2f}".format(shifty)),
+    str(f"{shifty:.2f}"),
     ",",
-    str("{:.2f}".format(shiftx)),
+    str(f"{shiftx:.2f}"),
     ") pixels",
 )
 new_amp = abs(obj)
@@ -753,9 +752,9 @@ plt.savefig(
 
 del new_strain_copy
 
-strain_simu[
-    bulk_simu == 0
-] = np.nan  # remove the non-physical outer layer for simulated strain
+strain_simu[bulk_simu == 0] = (
+    np.nan
+)  # remove the non-physical outer layer for simulated strain
 masked_array = np.ma.array(strain_simu, mask=np.isnan(strain_simu))
 
 fig, ((ax0, ax1), (ax2, ax3)) = plt.subplots(2, 2)
@@ -878,9 +877,7 @@ plt.savefig(savedir + "simu_strain_XY" + comment + "_colorbar.png", bbox_inches=
 # plot difference strain maps
 ##############################
 diff_strain = strain_simu - new_strain
-diff_strain[
-    support == 0
-] = (
+diff_strain[support == 0] = (
     np.nan
 )  # the support is 0 outside of the simulated object, strain is not defined there
 masked_array = np.ma.array(diff_strain, mask=np.isnan(diff_strain))
@@ -953,9 +950,9 @@ if debug:
     plt.colorbar(plt2, ax=ax2)
     plt.title("Phased support")
 
-diff_strain[
-    phased_support == 0
-] = np.nan  # exclude also layers outside of the isosurface for the reconstruction
+diff_strain[phased_support == 0] = (
+    np.nan
+)  # exclude also layers outside of the isosurface for the reconstruction
 masked_array = np.ma.array(diff_strain, mask=np.isnan(diff_strain))
 
 if debug:
@@ -1252,12 +1249,12 @@ plt.axis("scaled")
 
 print("Number of defined points in surface = ", (~np.isnan(surface)).sum())
 rms_strain = np.sqrt(np.mean(np.ndarray.flatten(surface[~np.isnan(surface)]) ** 2))
-print("RMS of the difference in surface strain = ", str("{:.4e}".format(rms_strain)))
+print("RMS of the difference in surface strain = ", str(f"{rms_strain:.4e}"))
 rms_strain = np.sqrt(np.mean(np.ndarray.flatten(bulk[~np.isnan(bulk)]) ** 2))
-print("RMS of the difference in bulk strain = ", str("{:.4e}".format(rms_strain)))
+print("RMS of the difference in bulk strain = ", str(f"{rms_strain:.4e}"))
 mean_strain = np.mean(np.ndarray.flatten(surface[~np.isnan(surface)]))
-print("Mean difference in surface strain = ", str("{:.4e}".format(mean_strain)))
+print("Mean difference in surface strain = ", str(f"{mean_strain:.4e}"))
 mean_strain = np.mean(np.ndarray.flatten(bulk[~np.isnan(bulk)]))
-print("Mean difference in bulk strain = ", str("{:.4e}".format(mean_strain)))
+print("Mean difference in bulk strain = ", str(f"{mean_strain:.4e}"))
 plt.ioff()
 plt.show()

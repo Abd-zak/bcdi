@@ -19,6 +19,18 @@ API Reference
 .. automodule:: bcdi.postprocessing.facet_recognition
    :members:
 
+analysis
+^^^^^^^^
+
+This module provides the classes used in postprocessing strain analysis. It is mainly
+an abstration layer making analysis steps more understandable.
+
+API Reference
+-------------
+
+.. automodule:: bcdi.postprocessing.analysis
+   :members:
+
 facet_analysis
 ^^^^^^^^^^^^^^
 
@@ -69,4 +81,16 @@ API Reference
 -------------
 
 .. automodule:: bcdi.postprocessing.process_scan
+   :members:
+
+raw_orthogonalization
+^^^^^^^^^^^^^^^^^^^^^
+
+This module provides the function for BCDI data orthogonalization of a single scan,
+after phase retrieval (skipping centering, phase offset and ramp removal).
+
+API Reference
+-------------
+
+.. automodule:: bcdi.postprocessing.raw_orthogonalization
    :members:

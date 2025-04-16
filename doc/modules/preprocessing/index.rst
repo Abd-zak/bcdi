@@ -17,6 +17,18 @@ API Reference
 .. automodule:: bcdi.preprocessing.preprocessing_runner
    :members:
 
+analysis
+^^^^^^^^
+
+This module provides the classes used in data preprocessing. It is mainly an abstration
+layer making analysis steps more understandable.
+
+API Reference
+-------------
+
+.. automodule:: bcdi.preprocessing.analysis
+   :members:
+
 bcdi_utils
 ^^^^^^^^^^
 
@@ -41,6 +53,18 @@ API Reference
 -------------
 
 .. automodule:: bcdi.preprocessing.cdi_utils
+   :members:
+
+center_fft
+^^^^^^^^^^
+
+This module provides classes related to centering the diffraction pattern in
+preprocessing.
+
+API Reference
+-------------
+
+.. automodule:: bcdi.preprocessing.center_fft
    :members:
 
 process_scan

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -11,7 +9,7 @@ import gc
 import logging
 from math import pi
 from numbers import Number, Real
-from typing import List, Union
+from typing import List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,7 +17,7 @@ import numpy.ma as ma
 import scipy
 from numpy.fft import fftn, fftshift, ifftn, ifftshift
 from scipy.interpolate import RegularGridInterpolator
-from scipy.ndimage.measurements import center_of_mass
+from scipy.ndimage import center_of_mass
 from scipy.signal import convolve
 from scipy.stats import multivariate_normal, norm
 from skimage.restoration import unwrap_phase
@@ -54,6 +52,7 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
        tuple of 3 floats
      - 'is_orthogonal': True if the data is in an orthonormal frame. Used for defining
        default plot labels.
+     - 'logger': an optional logger
 
     :return: filtered amplitude, phase of the same shape as myamp
     """
@@ -61,9 +60,10 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
     # check and load kwargs
     valid.valid_kwargs(
         kwargs=kwargs,
-        allowed_kwargs={"cmap", "sigma", "mu", "alpha", "is_orthogonal"},
+        allowed_kwargs={"logger", "cmap", "sigma", "mu", "alpha", "is_orthogonal"},
         name="postprocessing_utils.apodize",
     )
+    logger = kwargs.get("logger", module_logger)
     sigma = kwargs.get("sigma")
     mu = kwargs.get("mu")
     alpha = kwargs.get("alpha")
@@ -91,8 +91,8 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
     del myobj
     gc.collect()
     fftmax = abs(my_fft).max()
-    print("Max FFT=", fftmax)
     if debugging:
+        logger.info(f"Max FFT={fftmax}")
         gu.multislices_plot(
             array=abs(my_fft),
             sum_frames=False,
@@ -105,7 +105,7 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
         )
 
     if window_type == "normal":
-        print("Apodization using a 3d multivariate normal window")
+        logger.info("Apodization using a 3d multivariate normal window")
         sigma = sigma or np.array([0.3, 0.3, 0.3])
         mu = mu or np.array([0.0, 0.0, 0.0])
 
@@ -126,12 +126,12 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
         window = window.reshape((nbz, nby, nbx))
 
     elif window_type == "tukey":
-        print("Apodization using a 3d Tukey window")
+        logger.info("Apodization using a 3d Tukey window")
         alpha = alpha or np.array([0.5, 0.5, 0.5])
         window = tukey_window(initial_shape, alpha=alpha)
 
     elif window_type == "blackman":
-        print("Apodization using a 3d Blackman window")
+        logger.info("Apodization using a 3d Blackman window")
         window = blackman_window(initial_shape)
 
     else:
@@ -141,8 +141,8 @@ def apodize(amp, phase, initial_shape, window_type, debugging=False, **kwargs):
     del window
     gc.collect()
     my_fft = my_fft * fftmax / abs(my_fft).max()
-    print("Max apodized FFT after normalization =", abs(my_fft).max())
     if debugging:
+        logger.info(f"Max apodized FFT after normalization = {abs(my_fft).max()}")
         gu.multislices_plot(
             array=abs(my_fft),
             sum_frames=False,
@@ -581,15 +581,15 @@ def filter_3d(
 
 
 def find_bulk(
-    amp,
-    support_threshold,
-    method="threshold",
-    width_z=None,
-    width_y=None,
-    width_x=None,
-    debugging=False,
+    amp: np.ndarray,
+    support_threshold: float,
+    method: str = "threshold",
+    width_z: Optional[int] = None,
+    width_y: Optional[int] = None,
+    width_x: Optional[int] = None,
+    debugging: bool = False,
     **kwargs,
-):
+) -> np.ndarray:
     """
     Isolate the inner part of the crystal from the non-physical surface.
 
@@ -608,9 +608,11 @@ def find_bulk(
     :param kwargs:
 
      - 'cmap': str, name of the colormap
+     - 'logger': an optional logger
 
     :return: the support corresponding to the bulk
     """
+    logger = kwargs.get("logger", module_logger)
     valid.valid_ndarray(arrays=amp, ndim=3)
     cmap = kwargs.get("cmap", "turbo")
 
@@ -629,13 +631,13 @@ def find_bulk(
         outer = np.copy(mycoordination_matrix)
         outer[np.nonzero(outer)] = 1
         if mykernel.shape == np.ones((9, 9, 9)).shape:
-            outer[
-                mycoordination_matrix > 300
-            ] = 0  # start with a larger object, the mean surface amplitude is ~ 5%
+            outer[mycoordination_matrix > 300] = (
+                0  # start with a larger object, the mean surface amplitude is ~ 5%
+            )
         else:
             raise ValueError("Kernel not yet implemented")
 
-        outer[mycoordination_matrix == 0] = 1  # corresponds to outside of the crystal
+        outer[mycoordination_matrix == 0] = 1  # corresponds to outside the crystal
         if debugging:
             gu.multislices_plot(
                 outer,
@@ -663,9 +665,9 @@ def find_bulk(
             surface = np.copy(mycoordination_matrix)
             surface[np.nonzero(surface)] = 1
             surface[mycoordination_matrix > 389] = 0  # remove part from outer  389
-            outer[
-                mycoordination_matrix > 389
-            ] = 1  # include points left over by the coordination number selection
+            outer[mycoordination_matrix > 389] = (
+                1  # include points left over by the coordination number selection
+            )
             surface[mycoordination_matrix < 362] = 0  # remove part from bulk   311
             # below is to exclude from surface the frame outer part
             surface[0:5, :, :] = 0
@@ -694,7 +696,7 @@ def find_bulk(
                 keep_voxels / nb_voxels
             )  # % of voxels whose amplitude is larger than support_threshold
             mean_amp = np.mean(amp[np.nonzero(surface)].flatten()) / max_amp
-            print(
+            logger.info(
                 f"number of surface voxels = {nb_voxels}, "
                 f"% of surface voxels above threshold = {100 * voxels_counter:.2f} %, ",
                 f"mean surface amplitude = {mean_amp}",
@@ -703,7 +705,7 @@ def find_bulk(
                 outer[np.nonzero(surface)] = 1
                 idx = idx + 1
             else:
-                print("Surface of object reached after", idx, "iterations")
+                logger.info(f"Surface of object reached after {idx} iterations")
                 break
         support_defect = np.ones((nbz, nby, nbx)) - outer
         support = np.ones((nbz, nby, nbx))
@@ -711,64 +713,6 @@ def find_bulk(
         # add voxels detected by support_defect
         support[np.nonzero(support_defect)] = 1
     return support
-
-
-def find_crop_center(array_shape, crop_shape, pivot):
-    """
-    Find the position of the center of the cropping window.
-
-    It finds the closest voxel to pivot which allows to crop an array of array_shape to
-    crop_shape.
-
-    :param array_shape: initial shape of the array
-    :type array_shape: tuple
-    :param crop_shape: final shape of the array
-    :type crop_shape: tuple
-    :param pivot: position on which the final region of interest dhould be centered
-     (center of mass of the Bragg peak)
-    :type pivot: tuple
-    :return: the voxel position closest to pivot which allows cropping to the defined
-     shape.
-    """
-    valid.valid_container(
-        array_shape,
-        container_types=(tuple, list, np.ndarray),
-        min_length=1,
-        item_types=int,
-        name="array_shape",
-    )
-    ndim = len(array_shape)
-    valid.valid_container(
-        crop_shape,
-        container_types=(tuple, list, np.ndarray),
-        length=ndim,
-        item_types=int,
-        name="crop_shape",
-    )
-    valid.valid_container(
-        pivot,
-        container_types=(tuple, list, np.ndarray),
-        length=ndim,
-        item_types=int,
-        name="pivot",
-    )
-    crop_center = np.empty(ndim)
-    for idx, _ in enumerate(range(ndim)):
-        if max(0, pivot[idx] - crop_shape[idx] // 2) == 0:
-            # not enough range on this side of the com
-            crop_center[idx] = crop_shape[idx] // 2
-        else:
-            if (
-                min(array_shape[idx], pivot[idx] + crop_shape[idx] // 2)
-                == array_shape[idx]
-            ):
-                # not enough range on this side of the com
-                crop_center[idx] = array_shape[idx] - crop_shape[idx] // 2
-            else:
-                crop_center[idx] = pivot[idx]
-
-    crop_center = list(map(int, crop_center))
-    return crop_center
 
 
 def find_datarange(
@@ -916,7 +860,14 @@ def gaussian_kernel(ndim, kernel_length=21, sigma=3, debugging=False):
     return kernel
 
 
-def get_opticalpath(support, direction, k, voxel_size=None, debugging=False, **kwargs):
+def get_opticalpath(
+    support: np.ndarray,
+    direction: str,
+    k: np.ndarray,
+    voxel_size: Optional[Union[float, Tuple[float, float, float]]] = None,
+    debugging: bool = False,
+    **kwargs,
+) -> np.ndarray:
     """
     Calculate the optical path for refraction/absorption corrections in the crystal.
 
@@ -982,7 +933,7 @@ def get_opticalpath(support, direction, k, voxel_size=None, debugging=False, **k
     valid.valid_ndarray(arrays=support, ndim=3)
 
     voxel_size = voxel_size or (1, 1, 1)
-    if isinstance(voxel_size, Number):
+    if isinstance(voxel_size, (float, int)):
         voxel_size = (voxel_size,) * 3
     valid.valid_container(
         voxel_size,
@@ -997,7 +948,7 @@ def get_opticalpath(support, direction, k, voxel_size=None, debugging=False, **k
     # correct k for the different voxel size in each dimension #
     # (k is expressed in an orthonormal basis)                 #
     ############################################################
-    k = [k[i] * voxel_size[i] for i in range(3)]
+    rescaled_k = [k[i] * voxel_size[i] for i in range(3)]
 
     ###################################################################
     # find the extent of the object, to optimize the calculation time #
@@ -1016,9 +967,11 @@ def get_opticalpath(support, direction, k, voxel_size=None, debugging=False, **k
     # normalize k, now it is in units of voxels #
     #############################################
     if direction == "in":
-        k_norm = -1 / np.linalg.norm(k) * np.asarray(k)  # we will work with -k_in
+        k_norm = (
+            -1 / np.linalg.norm(rescaled_k) * np.asarray(rescaled_k)
+        )  # we will work with -k_in
     else:  # "out"
-        k_norm = 1 / np.linalg.norm(k) * np.asarray(k)
+        k_norm = 1 / np.linalg.norm(rescaled_k) * np.asarray(rescaled_k)
 
     #############################################
     # calculate the optical path for each voxel #
@@ -1214,6 +1167,40 @@ def get_strain(
     return strain
 
 
+def match_data_range_for_interpolation(
+    old_shape: Tuple[int, int, int],
+    old_voxelsizes: Tuple[int, int, int],
+    new_voxelsizes: Tuple[int, int, int],
+) -> Tuple[int, int, int]:
+    """
+    Find the shape of the array that keeps the data span constant with new voxel sizes.
+
+    :param old_shape: current shape of the 3D array
+    :param old_voxelsizes: current voxel size of the 3D array in each dimension
+    :param new_voxelsizes: voxel size of the 3D array in each dimension for the
+     interpolation
+    :return: the shape that keep the data span constant with the new voxel sizes.
+    """
+    nbz, nby, nbx = old_shape
+    data_extent = (
+        nbz * old_voxelsizes[0],
+        nby * old_voxelsizes[1],
+        nbx * old_voxelsizes[2],
+    )
+    new_extent = (
+        nbz * new_voxelsizes[0],
+        nby * new_voxelsizes[1],
+        nbx * new_voxelsizes[2],
+    )
+    pad_size = [
+        (data_extent[0] - new_extent[0]) // new_voxelsizes[0] + 1,
+        (data_extent[1] - new_extent[1]) // new_voxelsizes[1] + 1,
+        (data_extent[2] - new_extent[2]) // new_voxelsizes[2] + 1,
+    ]
+    pad_size = [int(val) if val >= 0 else 0 for val in pad_size]
+    return nbz + pad_size[0], nby + pad_size[1], nbx + pad_size[2]
+
+
 def mean_filter(
     array,
     support,
@@ -1250,6 +1237,7 @@ def mean_filter(
     :param kwargs:
 
      - 'cmap': str, name of the colormap
+     - 'logger': an optional logger
 
     :return: averaged array of the same shape as the input array
     """
@@ -1257,6 +1245,7 @@ def mean_filter(
     # check some parameters #
     #########################
     cmap = kwargs.get("cmap", "turbo")
+    logger = kwargs.get("logger", module_logger)
     valid.valid_ndarray(arrays=(array, support), ndim=3)
     valid.valid_item(half_width, allowed_types=int, min_included=0, name="half_width")
     valid.valid_container(title, container_types=str, name="title")
@@ -1354,7 +1343,9 @@ def mean_filter(
                 cmap=cmap,
             )
         if counter != 0:
-            print("There were", counter, "voxels for which phase could not be averaged")
+            logger.info(
+                f"There were {counter} voxels for which phase could not be averaged"
+            )
     return array
 
 
@@ -1494,7 +1485,16 @@ def regrid(array, old_voxelsize, new_voxelsize):
         min_excluded=0,
     )
 
-    nbz, nby, nbx = array.shape
+    nbz, nby, nbx = match_data_range_for_interpolation(
+        old_shape=array.shape,
+        old_voxelsizes=old_voxelsize,
+        new_voxelsizes=new_voxelsize,
+    )
+
+    array = util.crop_pad(
+        array=array,
+        output_shape=(nbz, nby, nbx),
+    )
 
     old_z = np.arange(-nbz // 2, nbz // 2, 1) * old_voxelsize[0]
     old_y = np.arange(-nby // 2, nby // 2, 1) * old_voxelsize[1]
@@ -1682,7 +1682,7 @@ def remove_ramp(
     valid.valid_ndarray(arrays=(amp, phase), ndim=3)
     cmap = kwargs.get("cmap", "turbo")
     if method == "upsampling":
-        nbz, nby, nbx = [mysize * ups_factor for mysize in initial_shape]
+        nbz, nby, nbx = (mysize * ups_factor for mysize in initial_shape)
         nb_z, nb_y, nb_x = amp.shape
         myobj = util.crop_pad(amp * np.exp(1j * phase), (nbz, nby, nbx), cmap=cmap)
         if debugging:
@@ -1745,7 +1745,7 @@ def remove_ramp(
             plt.title("centered np.log10(abs(my_fft).sum(axis=0))")
             plt.pause(0.1)
 
-        logger(f"COM after subpixel shift: {center_of_mass(abs(my_fft) ** 4)}")
+        logger.info(f"COM after subpixel shift: {center_of_mass(abs(my_fft) ** 4)}")
         myobj = fftshift(ifftn(ifftshift(my_fft)))
         del my_fft
         gc.collect()
@@ -1929,7 +1929,7 @@ def remove_ramp_2d(
     valid.valid_ndarray(arrays=(amp, phase), ndim=2)
 
     if method == "upsampling":
-        nby, nbx = [mysize * ups_factor for mysize in initial_shape]
+        nby, nbx = (mysize * ups_factor for mysize in initial_shape)
         nb_y, nb_x = amp.shape
         myobj = util.crop_pad(amp * np.exp(1j * phase), (nby, nbx))
         if debugging:
@@ -2070,7 +2070,7 @@ def remove_ramp_2d(
 
 def sort_reconstruction(
     file_path, data_range, amplitude_threshold, sort_method="variance/mean"
-):
+) -> List[int]:
     """
     Sort out reconstructions based on the metric 'sort_method'.
 
@@ -2161,7 +2161,7 @@ def sort_reconstruction(
     print(quality_array)
     print("sorted list", sorted_obj)
 
-    return sorted_obj
+    return [int(val) for val in sorted_obj]
 
 
 def tukey_window(shape, alpha=np.array([0.5, 0.5, 0.5])):
@@ -2188,20 +2188,22 @@ def tukey_window(shape, alpha=np.array([0.5, 0.5, 0.5])):
 
 
 def unwrap(
-    obj, support_threshold, seed=0, skip_unwrap: bool = False, debugging=True, **kwargs
-):
+    obj: np.ndarray,
+    support_threshold: float,
+    seed: int = 0,
+    debugging: bool = True,
+    **kwargs,
+) -> Tuple[np.ndarray, float]:
     """
     Unwrap the phase of a complex object.
 
     It is based on skimage.restoration.unwrap_phase. A mask can be applied by
     thresholding the modulus of the object.
 
-    :param obj: number or array to be wrapped
+    :param obj: array to be unwrapped
     :param support_threshold: relative threshold used to define a support from abs(obj)
     :param seed: int, random seed. Use always the same value if you want a
      deterministic behavior.
-    :param skip_unwrap: True to apply only the support_threshold to the phase but skip
-     the unwrapping part.
     :param debugging: set to True to see plots
     :param kwargs:
 
@@ -2233,28 +2235,23 @@ def unwrap(
     # 0 is a valid entry for ma.masked_array
     phase_wrapped: np.ndarray = ma.masked_array(np.angle(obj), mask=unwrap_support)
 
-    plot_title = "applying support threshold\n" if skip_unwrap else "unwrapping"
     if debugging and ndim == 3:
         gu.multislices_plot(
             phase_wrapped.data,
             plot_colorbar=True,
-            title=f"Before {plot_title}",
+            title="Before unwrapping",
             reciprocal_space=reciprocal_space,
             is_orthogonal=is_orthogonal,
             cmap=kwargs.get("cmap", "turbo"),
         )
 
-    if skip_unwrap:
-        phase_unwrapped = phase_wrapped
-    else:
-        phase_unwrapped = unwrap_phase(phase_wrapped, wrap_around=False, seed=seed).data
-
+    phase_unwrapped = unwrap_phase(phase_wrapped, wrap_around=False, seed=seed).data
     phase_unwrapped[np.nonzero(unwrap_support)] = 0
     if debugging and ndim == 3:
         gu.multislices_plot(
             phase_unwrapped,
             plot_colorbar=True,
-            title=f"After {plot_title}",
+            title="After unwrapping",
             reciprocal_space=reciprocal_space,
             is_orthogonal=is_orthogonal,
             cmap=kwargs.get("cmap", "turbo"),

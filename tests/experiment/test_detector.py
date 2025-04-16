@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -18,6 +16,7 @@ from bcdi.experiment.detector import (
     Dummy,
     Eiger2M,
     Eiger4M,
+    Lambda,
     Maxipix,
     Merlin,
     Timepix,
@@ -46,6 +45,9 @@ class TestCreateDetector(unittest.TestCase):
 
     def test_create_dummy(self):
         self.assertIsInstance(create_detector("Dummy"), Dummy)
+
+    def test_create_lambda(self):
+        self.assertIsInstance(create_detector("Lambda"), Lambda)
 
     def test_create_unknown_detector(self):
         with self.assertRaises(NotImplementedError):
@@ -197,8 +199,8 @@ class TestDetector(fake_filesystem_unittest.TestCase):
             Maxipix(name="Maxipix", preprocessing_binning=[2, 2, None])
 
     def test_preprocessing_binning_none_default(self):
-        det = Maxipix(name="Maxipix", preprocessing_binning=None)
-        self.assertEqual(det.preprocessing_binning, (1, 1, 1))
+        with self.assertRaises(ValueError):
+            Maxipix(name="Maxipix", preprocessing_binning=None)
 
     def test_preprocessing_binning_correct(self):
         det = Maxipix(name="Maxipix", preprocessing_binning=(2, 2, 1))
@@ -318,18 +320,6 @@ class TestDetector(fake_filesystem_unittest.TestCase):
         det = Maxipix(name="Maxipix", sum_roi=(), roi=(2, 252, 1, 35))
         self.assertEqual(det.sum_roi, det.roi)
         self.assertEqual(det.sum_roi, (2, 252, 1, 35))
-
-    def test_template_file_wrong_type(self):
-        with self.assertRaises(TypeError):
-            Maxipix(name="Maxipix", template_file=777)
-
-    def test_template_file_None(self):
-        det = Maxipix(name="Maxipix", template_file=None)
-        self.assertEqual(det.template_file, None)
-
-    def test_template_file_correct(self):
-        det = Maxipix(name="Maxipix", template_file="S")
-        self.assertEqual(det.template_file, "S")
 
     def test_template_imagefile_wrong_type(self):
         with self.assertRaises(TypeError):
@@ -857,6 +847,26 @@ class TestDummy(unittest.TestCase):
         self.assertTrue(det.unbinned_pixel_size[0] == det.unbinned_pixel_size[1])
 
 
+class TestLambda(unittest.TestCase):
+    """Tests related to the Lambda detector."""
+
+    def setUp(self) -> None:
+        self.det = Lambda("Lambda")
+        self.saturation_threshold = 1.5e6
+
+    def test_name(self):
+        self.assertEqual(self.det.name, "Lambda")
+
+    def test_unbinned_pixel_size(self):
+        self.assertTupleEqual(self.det.unbinned_pixel_size, (55e-06, 55e-06))
+
+    def test_unbinned_pixel_number(self):
+        self.assertTupleEqual(self.det.unbinned_pixel_number, (516, 516))
+
+    def test_saturation_threshold(self):
+        self.assertEqual(self.det.saturation_threshold, self.saturation_threshold)
+
+
 if __name__ == "__main__":
     run_tests(TestCreateDetector)
     run_tests(TestDetector)
@@ -866,3 +876,4 @@ if __name__ == "__main__":
     run_tests(TestTimepix)
     run_tests(TestMerlin)
     run_tests(TestDummy)
+    run_tests(TestLambda)

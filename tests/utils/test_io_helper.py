@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -22,7 +20,7 @@ class TestContextFile(unittest.TestCase):
 
     def setUp(self):
         self.filename = CONFIG
-        self.open_func = open
+        self.open_func = io.open
 
     def test_instantiate_class(self):
         ctx = ContextFile(filename=self.filename, open_func=self.open_func)
@@ -74,14 +72,12 @@ class TestContextFile(unittest.TestCase):
         ctx = ContextFile(
             filename=self.filename, open_func=self.open_func, shortname="test"
         )
-        print(repr(ctx))
         self.assertIsInstance(eval(repr(ctx)), ContextFile)
 
     def test_repr_str_none(self):
         ctx = ContextFile(
             filename=self.filename, open_func=self.open_func, shortname=None
         )
-        print(repr(ctx))
         self.assertIsInstance(eval(repr(ctx)), ContextFile)
 
 

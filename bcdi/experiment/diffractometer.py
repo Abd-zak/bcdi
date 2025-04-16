@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -53,13 +51,13 @@ from abc import ABC
 from collections import namedtuple
 from functools import reduce
 from numbers import Number, Real
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
+import bcdi.utils.format as fmt
 from bcdi.constants import BEAMLINES_BCDI, BEAMLINES_SAXS
 from bcdi.experiment.rotation_matrix import RotationMatrix
-from bcdi.utils import utilities as util
 from bcdi.utils import validation as valid
 
 module_logger = logging.getLogger(__name__)
@@ -123,6 +121,13 @@ def create_geometry(beamline, sample_offsets=None):
             sample_circles=["y-", "x-", "y-"],
             detector_circles=["y-", "x-"],
             default_offsets=(0, 0, 0),
+            user_offsets=sample_offsets,
+        )
+    if beamline == "BM02":
+        return Geometry(
+            sample_circles=["y+", "x-", "z+", "x-"],
+            detector_circles=["y+", "x-"],
+            default_offsets=(0, 0, 0, 0),
             user_offsets=sample_offsets,
         )
     if beamline == "ID27":
@@ -207,11 +212,9 @@ class Diffractometer(ABC):
     }  # + counter-clockwise, - clockwise
     valid_names = {"sample": "sample_circles"}
 
-    def __init__(self, name: str, **kwargs) -> None:
+    def __init__(self, name: str, sample_offsets=None, **kwargs) -> None:
         self.logger = kwargs.get("logger", module_logger)
-        self._geometry = create_geometry(
-            beamline=name, sample_offsets=kwargs.get("sample_offsets")
-        )
+        self._geometry = create_geometry(beamline=name, sample_offsets=sample_offsets)
         self.name = name
         self.sample_circles = self._geometry.sample_circles
         self.sample_offsets = (
@@ -395,7 +398,7 @@ class Diffractometer(ABC):
 
     def __repr__(self) -> str:
         """Representation string of the Diffractometer instance."""
-        return util.create_repr(self, Diffractometer)
+        return fmt.create_repr(self, Diffractometer)
 
     def rotation_matrix(self, stage_name: str, angles: List[Real]) -> np.ndarray:
         """
@@ -557,16 +560,27 @@ class DiffractometerFactory:
 
     @staticmethod
     def create_diffractometer(
-        name: str, **kwargs
+        name: str, sample_offsets: Optional[Tuple[float, ...]] = None, **kwargs
     ) -> Union[FullDiffractometer, DiffractometerSAXS]:
         """
         Create a diffractometer instance of the corresponding class.
 
         :param name: name of the beamline
+        :param sample_offsets: list or tuple of angles in degrees, corresponding to
+         the offsets of each of the sample circles (the offset for the most outer circle
+         should be at index 0). The number of circles is beamline dependent. Convention:
+         the sample offsets will be subtracted to measurement the motor values.
+        :param kwargs:
+         - 'logger': an optional logger
+
         :return: an instance of the corresponding class
         """
         if name in BEAMLINES_BCDI:
-            return FullDiffractometer(name=name, **kwargs)
+            return FullDiffractometer(
+                name=name, sample_offsets=sample_offsets, **kwargs
+            )
         if name in BEAMLINES_SAXS:
-            return DiffractometerSAXS(name=name, **kwargs)
+            return DiffractometerSAXS(
+                name=name, sample_offsets=sample_offsets, **kwargs
+            )
         raise NotImplementedError(f"Beamline {name} not supported")

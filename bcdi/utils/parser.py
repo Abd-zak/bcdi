@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-present : DESY PHOTON SCIENCE
@@ -18,8 +16,8 @@ from typing import Any, Dict, List, Optional, Type
 
 import yaml
 
+import bcdi.utils.format as fmt
 import bcdi.utils.validation as valid
-from bcdi.utils import utilities as util
 from bcdi.utils.parameters import valid_param
 
 logger = logging.getLogger(__name__)
@@ -280,4 +278,4 @@ class ConfigParser:
 
     def __repr__(self):
         """Representation string of the ConfigParser instance."""
-        return util.create_repr(self, ConfigParser)
+        return fmt.create_repr(self, ConfigParser)

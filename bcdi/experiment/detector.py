@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -67,7 +65,7 @@ from numbers import Integral, Real
 
 import numpy as np
 
-from bcdi.utils import utilities as util
+import bcdi.utils.format as fmt
 from bcdi.utils import validation as valid
 
 module_logger = logging.getLogger(__name__)
@@ -88,6 +86,8 @@ def create_detector(name, **kwargs):
         return Eiger4M(name=name, **kwargs)
     if name == "Eiger9M":
         return Eiger9M(name=name, **kwargs)
+    if name == "Lambda":
+        return Lambda(name=name, **kwargs)
     if name == "Timepix":
         return Timepix(name=name, **kwargs)
     if name == "Merlin":
@@ -124,14 +124,13 @@ class Detector(ABC):
      integrated intensity
     :param binning: binning factor of the 3D dataset
      (stacking dimension, detector vertical axis, detector horizontal axis)
-    :param kwargs:
-
-     - 'preprocessing_binning': tuple of the three binning factors used in a previous
+    :param preprocessing_binning: tuple of the three binning factors used in a previous
        preprocessing step
-     - 'offsets': tuple or list, sample and detector offsets corresponding to the
+    :param offsets: tuple or list, sample and detector offsets corresponding to the
        parameter delta in xrayutilities hxrd.Ang2Q.area method
-     - 'linearity_func': function to apply to each pixel of the detector in order to
+    :param linearity_func: function to apply to each pixel of the detector in order to
        compensate the deviation of the detector linearity for large intensities.
+    :param kwargs:
      - 'logger': an optional logger
 
     """
@@ -142,24 +141,26 @@ class Detector(ABC):
         rootdir=None,
         datadir=None,
         savedir=None,
-        template_file=None,
         template_imagefile=None,
         specfile=None,
         sample_name=None,
         roi=None,
         sum_roi=None,
         binning=(1, 1, 1),
+        preprocessing_binning=(1, 1, 1),
+        offsets=None,
+        linearity_func=None,
         **kwargs,
     ):
         # the detector name should be initialized first,
-        # other properties are depending on it
+        # other properties depend on it
         self._name = name
 
         # load the kwargs
         self.logger = kwargs.get("logger", module_logger)
-        self.preprocessing_binning = kwargs.get("preprocessing_binning") or (1, 1, 1)
-        self.offsets = kwargs.get("offsets")  # delegate the test to xrayutilities
-        self.linearity_func = kwargs.get("linearity_func")
+        self.preprocessing_binning = preprocessing_binning
+        self.offsets = offsets  # delegate the test to xrayutilities
+        self.linearity_func = linearity_func
 
         # load other positional arguments
         self.binning = binning
@@ -170,7 +171,6 @@ class Detector(ABC):
         self.datadir = datadir
         self.savedir = savedir
         self.sample_name = sample_name
-        self.template_file = template_file
         self.template_imagefile = template_imagefile
         self.specfile = specfile
 
@@ -257,7 +257,7 @@ class Detector(ABC):
             name="Detector.datadir",
         )
         if value is not None and not os.path.isdir(value):
-            raise ValueError(f"The directory {value} does not exist")
+            raise ValueError(f"The directory '{value}' does not exist")
         self._datadir = value
 
     @property
@@ -340,7 +340,6 @@ class Detector(ABC):
             "scandir": self.scandir,
             "savedir": self.savedir,
             "sample_name": self.sample_name,
-            "template_file": self.template_file,
             "template_imagefile": self.template_imagefile,
             "specfile": self.specfile,
         }
@@ -398,7 +397,7 @@ class Detector(ABC):
     @roi.setter
     def roi(self, value):
         if not value:  # None or empty list/tuple
-            value = [0, self.nb_pixel_y, 0, self.nb_pixel_x]
+            value = [0, self.unbinned_pixel_number[0], 0, self.unbinned_pixel_number[1]]
         valid.valid_container(
             value,
             container_types=(tuple, list, np.ndarray),
@@ -494,22 +493,6 @@ class Detector(ABC):
         self._sum_roi = value
 
     @property
-    def template_file(self):
-        """Template that can be used to generate template_imagefile."""
-        return self._template_file
-
-    @template_file.setter
-    def template_file(self, value):
-        valid.valid_container(
-            value,
-            container_types=str,
-            min_length=0,
-            allow_none=True,
-            name="Detector.template_file",
-        )
-        self._template_file = value
-
-    @property
     def template_imagefile(self):
         """Name of the data file."""
         return self._template_imagefile
@@ -543,7 +526,7 @@ class Detector(ABC):
 
     def __repr__(self):
         """Representation string of the Detector instance."""
-        return util.create_repr(self, Detector)
+        return fmt.create_repr(self, Detector)
 
     @staticmethod
     def _background_subtraction(data, background):
@@ -1060,7 +1043,6 @@ class Dummy(Detector):
     """
 
     def __init__(self, name, **kwargs):
-
         self.custom_pixelsize = kwargs.get("custom_pixelsize")
         valid.valid_item(
             self.custom_pixelsize,
@@ -1103,4 +1085,28 @@ class Dummy(Detector):
         if self.custom_pixelsize is not None:
             return self.custom_pixelsize, self.custom_pixelsize
         self.logger.info(f"Defaulting the pixel size to {55e-06, 55e-06}")
+        return 55e-06, 55e-06
+
+
+class Lambda(Detector):
+    """Implementation of the Lambda detector."""
+
+    def __init__(self, name, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self._counter_table = {"BM02": "img"}
+        # useful if the same type of detector is used at several beamlines
+        self.saturation_threshold = 1.5e6
+
+    @property
+    def unbinned_pixel_number(self):
+        """
+        Define the number of pixels of the unbinned detector.
+
+        Convention: (vertical, horizontal)
+        """
+        return 516, 516
+
+    @property
+    def unbinned_pixel_size(self):
+        """Pixel size (vertical, horizontal) of the unbinned detector in meters."""
         return 55e-06, 55e-06

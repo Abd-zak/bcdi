@@ -18,7 +18,18 @@ API Reference
 .. automodule:: bcdi.utils.utilities
    :members:
 
-image_registration 
+format
+^^^^^^
+
+Functions and class related to string formatting for JSON dump and repr.
+
+API Reference
+-------------
+
+.. automodule:: bcdi.utils.format
+   :members:
+
+image_registration
 ^^^^^^^^^^^^^^^^^^
 
 Functions related to image registration and the alignment of datasets in direct or
@@ -71,6 +82,19 @@ API Reference
 
 .. automodule:: bcdi.utils.snippets_logging
    :members:
+
+text
+^^^^
+
+This module provides the class used to define filename when saving data and figures
+during processing.
+
+API Reference
+-------------
+
+.. automodule:: bcdi.utils.text
+   :members:
+
 
 validation
 ^^^^^^^^^^

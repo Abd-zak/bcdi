@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -7,27 +5,27 @@
 #         Jerome Carnis, jerome.carnis@esrf.fr
 """Functions related to BCDI data preprocessing, before phase retrieval."""
 
-try:
-    import hdf5plugin  # for P10, should be imported before h5py or PyTables
-except ModuleNotFoundError:
-    pass
-
 import logging
 import pathlib
 from numbers import Real
 from operator import mul
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import xrayutilities as xu
 from scipy.interpolate import interp1d
-from scipy.ndimage.measurements import center_of_mass
+from scipy.ndimage import center_of_mass
 
 from bcdi.experiment import loader
+from bcdi.experiment.detector import Detector
 from bcdi.graph import graph_utils as gu
+from bcdi.preprocessing.center_fft import CenteringFactory
 from bcdi.utils import utilities as util
 from bcdi.utils import validation as valid
+
+if TYPE_CHECKING:
+    from bcdi.experiment.setup import Setup
 
 module_logger = logging.getLogger(__name__)
 
@@ -45,7 +43,8 @@ class PeakFinder:
      full detector
     :param peak_method: peak searching method, among "max", "com", "max_com".
     :param kwargs:
-     - "logger": an optional logger
+     - 'logger': an optional logger
+     - "user_defined_peak": [z, y, x] Bragg peak position defined by the user
 
     """
 
@@ -69,7 +68,7 @@ class PeakFinder:
         self.peak_method = peak_method
         self.logger: logging.Logger = kwargs.get("logger", module_logger)
 
-        self._peaks = self.find_peak()
+        self._peaks = self.find_peak(kwargs.get("user_defined_peak"))
         self._rocking_curve: Optional[np.ndarray] = None
         self._detector_data_at_peak: Optional[np.ndarray] = self.array[
             self._roi_center[0], :, :
@@ -154,7 +153,9 @@ class PeakFinder:
         )
         self._region_of_interest = value
 
-    def find_peak(self) -> Dict[str, Tuple[int, int, int]]:
+    def find_peak(
+        self, user_defined_peak: Optional[Tuple[int, int, int]] = None
+    ) -> Dict[str, Tuple[int, int, int]]:
         """
         Find the position of the Bragg peak using three different metrics.
 
@@ -162,6 +163,8 @@ class PeakFinder:
          - "max": maximum of the modulus
          - "com": center of mass of the modulus
          - "max_com": "max" along the first axis, "com" along the other axes
+
+        :param user_defined_peak: [z, y, x] Bragg peak position defined by the user
         """
         index_max = np.unravel_index(abs(self.array).argmax(), self.array.shape)
         position_max = [int(val) for val in index_max]
@@ -185,7 +188,13 @@ class PeakFinder:
             f"MaxCom at (z, y, x): {position_max_com}, "
             f"value = {int(self.array[position_max_com])}"
         )
-
+        if user_defined_peak is not None:
+            return {
+                "max": self.get_indices_full_detector(list(position_max)),
+                "com": self.get_indices_full_detector(list(position_com)),
+                "max_com": self.get_indices_full_detector(list(position_max_com)),
+                "user": user_defined_peak,
+            }
         return {
             "max": self.get_indices_full_detector(list(position_max)),
             "com": self.get_indices_full_detector(list(position_com)),
@@ -199,8 +208,7 @@ class PeakFinder:
 
     def get_indices_full_detector(self, position: List[int]) -> Tuple[int, int, int]:
         """Calculate the position in the unbinned, full detector frame."""
-        unbinned_position = self._unbin(position)
-        return self._offset(unbinned_position, frame="full_detector")
+        return self._offset(self._unbin(position), frame="full_detector")
 
     def fit_rocking_curve(self, tilt_values: Optional[np.ndarray] = None):
         """
@@ -281,7 +289,7 @@ class PeakFinder:
             return
 
         tilt_values = self.metadata.get("tilt_values")
-        if tilt_values is None:
+        if tilt_values is None or len(tilt_values) != len(rocking_curve):
             tilt_values = np.arange(self.array.shape[0])
             x_label = "Frame number"
         else:
@@ -327,6 +335,10 @@ class PeakFinder:
 
     def _fit_rocking_curve(self, tilt_values) -> None:
         """Fit the rocking curve and optionally tilt values by cubic interpolation."""
+        self._tilt_values = tilt_values
+        self._tilt_value_at_peak = (
+            tilt_values[self._roi_center[0]] if tilt_values is not None else None
+        )
         rocking_curve = self.metadata.get("rocking_curve")
         if rocking_curve is None:
             self.logger.info("'rocking_curve' is None, nothing to fit")
@@ -334,6 +346,12 @@ class PeakFinder:
         x_axis = (
             tilt_values if tilt_values is not None else np.arange(len(rocking_curve))
         )
+        if len(x_axis) != len(rocking_curve):
+            self.logger.warning(
+                "tilt_values and rocking curve don't have the same length (hint: did "
+                "you reload cropped data?)"
+            )
+            return
         interpolation = interp1d(x_axis, rocking_curve, kind="cubic")
         interp_points = 5 * self.array.shape[0]
         interp_tilt = np.linspace(x_axis.min(), x_axis.max(), interp_points)
@@ -344,13 +362,9 @@ class PeakFinder:
             / (interp_points - 1)
         )
         self.logger.info(f"FWHM by interpolation: {interp_fwhm:.3f} deg")
-        self._tilt_values = tilt_values
         self._interp_tilt_values = interp_tilt
         self._interp_rocking_curve = interp_curve
         self._interp_fwhm = interp_fwhm
-        self._tilt_value_at_peak = (
-            tilt_values[self._roi_center[0]] if tilt_values is not None else None
-        )
 
     def _get_rocking_curve(
         self,
@@ -395,12 +409,12 @@ class PeakFinder:
 
 
 def center_fft(
-    data,
-    mask,
-    detector,
-    frames_logical,
-    centering="max",
-    fft_option="crop_asymmetric_ZYX",
+    data: np.ndarray,
+    mask: np.ndarray,
+    detector: Detector,
+    frames_logical: np.ndarray,
+    centering: str = "max",
+    fft_option: str = "crop_asymmetric_ZYX",
     **kwargs,
 ):
     """
@@ -456,487 +470,33 @@ def center_fft(
     # check and load kwargs
     valid.valid_kwargs(
         kwargs=kwargs,
-        allowed_kwargs={"fix_bragg", "logger", "pad_size", "q_values"},
-        name="kwargs",
+        allowed_kwargs={"bragg_peak", "logger", "pad_size", "q_values"},
     )
-    fix_bragg = kwargs.get("fix_bragg")
-    pad_size = kwargs.get("pad_size", [])
-    q_values = kwargs.get("q_values", [])
 
-    if q_values:  # len(q_values) != 0
-        qx = q_values[0]  # axis=0, z downstream, qx in reciprocal space
-        qz = q_values[1]  # axis=1, y vertical, qz in reciprocal space
-        qy = q_values[2]  # axis=2, x outboard, qy in reciprocal space
-    else:
-        qx = []
-        qy = []
-        qz = []
+    centering_fft = CenteringFactory(
+        data=data,
+        binning=detector.binning,
+        preprocessing_binning=detector.preprocessing_binning,
+        roi=detector.roi,
+        bragg_peak=kwargs.get("bragg_peak"),
+        fft_option=fft_option,
+        pad_size=kwargs.get("pad_size"),
+        centering_method=centering,
+        logger=logger,
+        q_values=kwargs.get("q_values", []),
+    ).get_centering_instance()
 
-    if centering == "max":
-        z0, y0, x0 = np.unravel_index(abs(data).argmax(), data.shape)
-        if q_values:
-            logger.info(
-                f"Max at (qx, qz, qy): {qx[z0]:.5f}, {qz[y0]:.5f}, {qy[x0]:.5f}"
-            )
-        else:
-            logger.info(f"Max at pixel (Z, Y, X): ({z0, y0, x0})")
-    elif centering == "com":
-        z0, y0, x0 = center_of_mass(data)
-        if q_values:
-            logger.info(
-                "Center of mass at (qx, qz, qy): "
-                f"{qx[z0]:.5f}, {qz[y0]:.5f}, {qy[x0]:.5f}"
-            )
-        else:
-            logger.info(f"Center of mass at pixel (Z, Y, X): ({z0, y0, x0})")
-    else:  # 'max_com'
-        position = list(np.unravel_index(abs(data).argmax(), data.shape))
-        position[1:] = center_of_mass(data[position[0], :, :])
-        z0, y0, x0 = tuple(map(lambda x: int(np.rint(x)), position))
-
-    if fix_bragg:
-        if len(fix_bragg) != 3:
-            raise ValueError("fix_bragg should be a list of 3 integers")
-        z0, y0, x0 = fix_bragg
-        logger.info(
-            "Peak intensity position defined by user on the full detector: "
-            f"({z0, y0, x0})"
-        )
-        y0 = (y0 - detector.roi[0]) / detector.binning[1]
-        x0 = (x0 - detector.roi[2]) / detector.binning[2]
-        logger.info(
-            "Peak intensity position with detector ROI and binning in detector plane: "
-            f"({z0, y0, x0})"
-        )
-    iz0, iy0, ix0 = int(round(z0)), int(round(y0)), int(round(x0))
-    logger.info(f"Data peak value = {data[iz0, iy0, ix0]:.1f}")
-
-    # Max symmetrical box around center of mass
-    nbz, nby, nbx = np.shape(data)
-    max_nz = abs(2 * min(iz0, nbz - iz0))
-    max_ny = 2 * min(iy0, nby - iy0)
-    max_nx = abs(2 * min(ix0, nbx - ix0))
-    if fft_option != "skip":
-        logger.info(f"Max symmetrical box (qx, qz, qy): ({max_nz, max_ny, max_nx})")
-    if any(val == 0 for val in (max_nz, max_ny, max_nx)):
-        logger.info(
-            "Empty images or presence of hotpixel at the border,"
-            ' defaulting fft_option to "skip"!'
-        )
-        fft_option = "skip"
-
-    # Crop/pad data to fulfill FFT size and user requirements
-    if fft_option == "crop_sym_ZYX":
-        # crop rocking angle and detector, Bragg peak centered
-        nz1, ny1, nx1 = util.smaller_primes(
-            (max_nz, max_ny, max_nx), maxprime=7, required_dividers=(2,)
-        )
-        pad_width = np.zeros(6, dtype=int)
-
-        data = data[
-            iz0 - nz1 // 2 : iz0 + nz1 // 2,
-            iy0 - ny1 // 2 : iy0 + ny1 // 2,
-            ix0 - nx1 // 2 : ix0 + nx1 // 2,
-        ]
-        mask = mask[
-            iz0 - nz1 // 2 : iz0 + nz1 // 2,
-            iy0 - ny1 // 2 : iy0 + ny1 // 2,
-            ix0 - nx1 // 2 : ix0 + nx1 // 2,
-        ]
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        if (iz0 - nz1 // 2) > 0:  # if 0, the first frame is used
-            frames_logical[0 : iz0 - nz1 // 2] = 0
-        if (iz0 + nz1 // 2) < nbz:  # if nbz, the last frame is used
-            frames_logical[iz0 + nz1 // 2 :] = 0
-
-        if len(q_values) != 0:
-            qx = qx[iz0 - nz1 // 2 : iz0 + nz1 // 2]
-            qy = qy[ix0 - nx1 // 2 : ix0 + nx1 // 2]
-            qz = qz[iy0 - ny1 // 2 : iy0 + ny1 // 2]
-
-    elif fft_option == "crop_asym_ZYX":
-        # crop rocking angle and detector without centering the Bragg peak
-        nz1, ny1, nx1 = util.smaller_primes(
-            (nbz, nby, nbx), maxprime=7, required_dividers=(2,)
-        )
-        pad_width = np.zeros(6, dtype=int)
-
-        data = data[
-            nbz // 2 - nz1 // 2 : nbz // 2 + nz1 // 2,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        mask = mask[
-            nbz // 2 - nz1 // 2 : nbz // 2 + nz1 // 2,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        if (nbz // 2 - nz1 // 2) > 0:  # if 0, the first frame is used
-            frames_logical[0 : nbz // 2 - nz1 // 2] = 0
-        if (nbz // 2 + nz1 // 2) < nbz:  # if nbz, the last frame is used
-            frames_logical[nbz // 2 + nz1 // 2 :] = 0
-
-        if len(q_values) != 0:
-            qx = qx[nbz // 2 - nz1 // 2 : nbz // 2 + nz1 // 2]
-            qy = qy[nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2]
-            qz = qz[nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2]
-
-    elif fft_option == "pad_sym_Z_crop_sym_YX":
-        # pad rocking angle based on 'pad_size' (Bragg peak centered)
-        # and crop detector (Bragg peak centered)
-        if len(pad_size) != 3:
-            raise ValueError("pad_size should be a list of three elements")
-        if pad_size[0] != util.higher_primes(
-            pad_size[0], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[0], "does not meet FFT requirements")
-        ny1, nx1 = util.smaller_primes(
-            (max_ny, max_nx), maxprime=7, required_dividers=(2,)
-        )
-
-        data = data[:, iy0 - ny1 // 2 : iy0 + ny1 // 2, ix0 - nx1 // 2 : ix0 + nx1 // 2]
-        mask = mask[:, iy0 - ny1 // 2 : iy0 + ny1 // 2, ix0 - nx1 // 2 : ix0 + nx1 // 2]
-        pad_width = np.array(
-            [
-                int(min(pad_size[0] / 2 - iz0, pad_size[0] - nbz)),
-                int(min(pad_size[0] / 2 - nbz + iz0, pad_size[0] - nbz)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(pad_size[0]) * dqx
-            qy = qy[ix0 - nx1 // 2 : ix0 + nx1 // 2]
-            qz = qz[iy0 - ny1 // 2 : iy0 + ny1 // 2]
-
-    elif fft_option == "pad_sym_Z_crop_asym_YX":
-        # pad rocking angle based on 'pad_size' (Bragg peak centered)
-        # and crop detector (Bragg peak non-centered)
-        if len(pad_size) != 3:
-            raise ValueError("pad_size should be a list of three elements")
-        logger.info(f"pad_size for 1st axis before binning: {pad_size[0]}")
-        if pad_size[0] != util.higher_primes(
-            pad_size[0], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[0], "does not meet FFT requirements")
-        ny1, nx1 = util.smaller_primes(
-            (max_ny, max_nx), maxprime=7, required_dividers=(2,)
-        )
-
-        data = data[
-            :,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        mask = mask[
-            :,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        pad_width = np.array(
-            [
-                int(min(pad_size[0] / 2 - iz0, pad_size[0] - nbz)),
-                int(min(pad_size[0] / 2 - nbz + iz0, pad_size[0] - nbz)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(pad_size[0]) * dqx
-            qy = qy[nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2]
-            qz = qz[nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2]
-
-    elif fft_option == "pad_asym_Z_crop_sym_YX":
-        # pad rocking angle without centering the Bragg peak
-        # and crop detector (Bragg peak centered)
-        ny1, nx1 = util.smaller_primes(
-            (max_ny, max_nx), maxprime=7, required_dividers=(2,)
-        )
-        nz1 = util.higher_primes(nbz, maxprime=7, required_dividers=(2,))
-
-        data = data[:, iy0 - ny1 // 2 : iy0 + ny1 // 2, ix0 - nx1 // 2 : ix0 + nx1 // 2]
-        mask = mask[:, iy0 - ny1 // 2 : iy0 + ny1 // 2, ix0 - nx1 // 2 : ix0 + nx1 // 2]
-        pad_width = np.array(
-            [
-                int((nz1 - nbz + ((nz1 - nbz) % 2)) / 2),
-                int((nz1 - nbz + 1) / 2 - ((nz1 - nbz) % 2)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(nz1) * dqx
-            qy = qy[ix0 - nx1 // 2 : ix0 + nx1 // 2]
-            qz = qz[iy0 - ny1 // 2 : iy0 + ny1 // 2]
-
-    elif fft_option == "pad_asym_Z_crop_asym_YX":
-        # pad rocking angle and crop detector without centering the Bragg peak
-        ny1, nx1 = util.smaller_primes((nby, nbx), maxprime=7, required_dividers=(2,))
-        nz1 = util.higher_primes(nbz, maxprime=7, required_dividers=(2,))
-
-        data = data[
-            :,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        mask = mask[
-            :,
-            nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2,
-            nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2,
-        ]
-        pad_width = np.array(
-            [
-                int((nz1 - nbz + ((nz1 - nbz) % 2)) / 2),
-                int((nz1 - nbz + 1) / 2 - ((nz1 - nbz) % 2)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(nz1) * dqx
-            qy = qy[nbx // 2 - nx1 // 2 : nbx // 2 + nx1 // 2]
-            qz = qz[nby // 2 - ny1 // 2 : nby // 2 + ny1 // 2]
-
-    elif fft_option == "pad_sym_Z":
-        # pad rocking angle based on 'pad_size'(Bragg peak centered)
-        # and keep detector size
-        if len(pad_size) != 3:
-            raise ValueError("pad_size should be a list of three elements")
-        logger.info(f"pad_size for 1st axis before binning: {pad_size[0]}")
-        if pad_size[0] != util.higher_primes(
-            pad_size[0], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[0], "does not meet FFT requirements")
-
-        pad_width = np.array(
-            [
-                int(min(pad_size[0] / 2 - iz0, pad_size[0] - nbz)),
-                int(min(pad_size[0] / 2 - nbz + iz0, pad_size[0] - nbz)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(pad_size[0]) * dqx
-
-    elif fft_option == "pad_asym_Z":
-        # pad rocking angle without centering the Bragg peak, keep detector size
-        nz1 = util.higher_primes(nbz, maxprime=7, required_dividers=(2,))
-
-        pad_width = np.array(
-            [
-                int((nz1 - nbz + ((nz1 - nbz) % 2)) / 2),
-                int((nz1 - nbz + 1) / 2 - ((nz1 - nbz) % 2)),
-                0,
-                0,
-                0,
-                0,
-            ],
-            dtype=int,
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qx = qx0 + np.arange(nz1) * dqx
-
-    elif fft_option == "pad_sym_ZYX":
-        # pad both dimensions based on 'pad_size' (Bragg peak centered)
-        if len(pad_size) != 3:
-            raise ValueError("pad_size should be a list of 3 integers")
-        logger.info(f"pad_size: {pad_size}")
-        logger.info(
-            "The 1st axis (stacking dimension) is padded before binning,"
-            " detector plane after binning."
-        )
-        if pad_size[0] != util.higher_primes(
-            pad_size[0], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[0], "does not meet FFT requirements")
-        if pad_size[1] != util.higher_primes(
-            pad_size[1], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[1], "does not meet FFT requirements")
-        if pad_size[2] != util.higher_primes(
-            pad_size[2], maxprime=7, required_dividers=(2,)
-        ):
-            raise ValueError(pad_size[2], "does not meet FFT requirements")
-
-        pad_width = [
-            int(min(pad_size[0] / 2 - iz0, pad_size[0] - nbz)),
-            int(min(pad_size[0] / 2 - nbz + iz0, pad_size[0] - nbz)),
-            int(min(pad_size[1] / 2 - iy0, pad_size[1] - nby)),
-            int(min(pad_size[1] / 2 - nby + iy0, pad_size[1] - nby)),
-            int(min(pad_size[2] / 2 - ix0, pad_size[2] - nbx)),
-            int(min(pad_size[2] / 2 - nbx + ix0, pad_size[2] - nbx)),
-        ]
-        pad_width = np.array(
-            list((map(lambda value: max(value, 0), pad_width))), dtype=int
-        )  # remove negative numbers
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-        logger.info(f"FFT box (qx, qz, qy): {data.shape}")
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            dqy = qy[1] - qy[0]
-            dqz = qz[1] - qz[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qy0 = qy[0] - pad_width[2] * dqy
-            qz0 = qz[0] - pad_width[1] * dqz
-            qx = qx0 + np.arange(pad_size[0]) * dqx
-            qy = qy0 + np.arange(pad_size[2]) * dqy
-            qz = qz0 + np.arange(pad_size[1]) * dqz
-
-    elif fft_option == "pad_asym_ZYX":
-        # pad both dimensions without centering the Bragg peak
-        nz1, ny1, nx1 = [
-            util.higher_primes(nbz, maxprime=7, required_dividers=(2,)),
-            util.higher_primes(nby, maxprime=7, required_dividers=(2,)),
-            util.higher_primes(nbx, maxprime=7, required_dividers=(2,)),
-        ]
-
-        pad_width = np.array(
-            [
-                int((nz1 - nbz + ((nz1 - nbz) % 2)) / 2),
-                int((nz1 - nbz + 1) / 2 - ((nz1 - nbz) % 2)),
-                int((ny1 - nby + ((pad_size[1] - nby) % 2)) / 2),
-                int((ny1 - nby + 1) / 2 - ((ny1 - nby) % 2)),
-                int((nx1 - nbx + ((nx1 - nbx) % 2)) / 2),
-                int((nx1 - nbx + 1) / 2 - ((nx1 - nbx) % 2)),
-            ]
-        )
-        data = zero_pad(data, padding_width=pad_width, mask_flag=False)
-        mask = zero_pad(
-            mask, padding_width=pad_width, mask_flag=True
-        )  # mask padded pixels
-
-        temp_frames = -1 * np.ones(data.shape[0])
-        temp_frames[pad_width[0] : pad_width[0] + nbz] = frames_logical
-        frames_logical = temp_frames
-
-        if len(q_values) != 0:
-            dqx = qx[1] - qx[0]
-            dqy = qy[1] - qy[0]
-            dqz = qz[1] - qz[0]
-            qx0 = qx[0] - pad_width[0] * dqx
-            qy0 = qy[0] - pad_width[2] * dqy
-            qz0 = qz[0] - pad_width[1] * dqz
-            qx = qx0 + np.arange(nz1) * dqx
-            qy = qy0 + np.arange(nx1) * dqy
-            qz = qz0 + np.arange(ny1) * dqz
-
-    elif fft_option == "skip":
-        # keep the full dataset
-        pad_width = np.zeros(6, dtype=int)
-    else:
-        raise ValueError("Incorrect value for 'fft_option'")
-
-    if len(q_values) != 0:
-        q_values = list(q_values)
-        q_values[0] = qx
-        q_values[1] = qz
-        q_values[2] = qy
-    return data, mask, pad_width, q_values, frames_logical
+    return centering_fft.center_fft(
+        data=data,
+        mask=mask,
+        frames_logical=frames_logical,
+    )
 
 
 def find_bragg(
     array: np.ndarray,
     binning: Optional[List[int]] = None,
-    region_of_interest: Optional[List[int]] = None,
+    roi: Optional[List[int]] = None,
     peak_method: str = "max_com",
     tilt_values: Optional[np.ndarray] = None,
     savedir: Optional[str] = None,
@@ -950,7 +510,7 @@ def find_bragg(
 
     :param array: the detector data
     :param binning: the binning factor of array relative to the unbinned detector
-    :param region_of_interest: the region of interest applied to build array out of the
+    :param roi: the region of interest applied to build array out of the
      full detector
     :param peak_method: peak searching method, among "max", "com", "max_com".
     :param tilt_values: the angular values of the motor during the rocking curve
@@ -958,15 +518,21 @@ def find_bragg(
     :param plot_fit: if True, will plot results and fit the rocking curve
     :param kwargs:
      - "logger": an optional logger
+     - "user_defined_peak": [z, y, x] Bragg peak position defined by the user
 
     :return: the metadata with the results of the peak search and the fit.
     """
+    valid.valid_kwargs(
+        kwargs=kwargs,
+        allowed_kwargs={"logger", "user_defined_peak"},
+    )
     logger: logging.Logger = kwargs.get("logger", module_logger)
     peakfinder = PeakFinder(
         array=array,
-        region_of_interest=region_of_interest,
+        region_of_interest=roi,
         binning=binning,
         peak_method=peak_method,
+        user_defined_peak=kwargs.get("user_defined_peak"),
         logger=logger,
     )
 
@@ -1031,7 +597,6 @@ def grid_bcdi_labframe(
     valid.valid_kwargs(
         kwargs=kwargs,
         allowed_kwargs={"cmap", "fill_value", "logger", "reference_axis"},
-        name="kwargs",
     )
     cmap = kwargs.get("cmap", "turbo")
     fill_value = kwargs.get("fill_value", (0, 0))
@@ -1219,12 +784,11 @@ def grid_bcdi_xrayutil(
         hxrd=hxrd,
         nb_frames=numz,
         scan_number=scan_number,
-        frames_logical=frames_logical,
     )
 
     maxbins: List[int] = []
     for dim in (qx, qy, qz):
-        maxstep = max((abs(np.diff(dim, axis=j)).max() for j in range(3)))
+        maxstep = max(abs(np.diff(dim, axis=j)).max() for j in range(3))
         maxbins.append(int(abs(dim.max() - dim.min()) / maxstep))
     logger.info(f"Maximum number of bins based on the sampling in q: {maxbins}")
     maxbins = util.smaller_primes(maxbins, maxprime=7, required_dividers=(2,))
@@ -1354,16 +918,16 @@ def grid_bcdi_xrayutil(
 
 
 def load_bcdi_data(
-    scan_number,
-    setup,
-    bin_during_loading=False,
-    flatfield=None,
-    hotpixels=None,
-    background=None,
-    normalize="skip",
-    debugging=False,
+    scan_number: int,
+    setup: "Setup",
+    bin_during_loading: bool = False,
+    flatfield: Optional[np.ndarray] = None,
+    hotpixels: Optional[np.ndarray] = None,
+    background: Optional[np.ndarray] = None,
+    normalize: str = "skip",
+    debugging: bool = False,
     **kwargs,
-):
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load Bragg CDI data, apply optional threshold, normalization and binning.
 
@@ -1380,9 +944,12 @@ def load_bcdi_data(
     :param kwargs:
 
      - 'photon_threshold': float, photon threshold to apply before binning
-     - 'frames_pattern': 1D array of int, of length data.shape[0]. If
-       frames_pattern is 0 at index, the frame at data[index] will be skipped,
-       if 1 the frame will added to the stack.
+     - 'frames_pattern': None or list of int.
+       Use this if you need to remove some frames, and you know it in advance. You can
+       provide a binary list of length the number of images in the dataset. If
+       frames_pattern is 0 at index, the frame at data[index] will be skipped, if 1 the
+       frame will be added to the stack. Or you can directly specify the indices of the
+       frames to be skipped, e.g. [0, 127] to skip frames at indices 0 and 127.
      - 'logger': an optional logger
 
     :return:
@@ -1399,7 +966,6 @@ def load_bcdi_data(
     valid.valid_kwargs(
         kwargs=kwargs,
         allowed_kwargs={"photon_threshold", "frames_pattern", "logger"},
-        name="kwargs",
     )
     photon_threshold = kwargs.get("photon_threshold", 0)
     valid.valid_item(
@@ -1408,15 +974,11 @@ def load_bcdi_data(
         min_included=0,
         name="photon_threshold",
     )
-    frames_pattern = kwargs.get("frames_pattern")
-    valid.valid_1d_array(
-        frames_pattern, allow_none=True, allowed_values={0, 1}, name="frames_pattern"
-    )
 
     rawdata, rawmask, monitor, frames_logical = setup.loader.load_check_dataset(
         scan_number=scan_number,
         setup=setup,
-        frames_pattern=frames_pattern,
+        frames_pattern=kwargs.get("frames_pattern"),
         bin_during_loading=bin_during_loading,
         flatfield=flatfield,
         hotpixels=hotpixels,
@@ -1424,7 +986,7 @@ def load_bcdi_data(
         normalize=normalize,
         debugging=debugging,
     )
-
+    setup.frames_logical = frames_logical
     #####################################################
     # apply an optional photon threshold before binning #
     #####################################################
@@ -1474,18 +1036,18 @@ def load_bcdi_data(
         pad_value=(0, 1),
     )
 
-    return rawdata, rawmask, frames_logical, monitor
+    return np.asarray(rawdata), np.asarray(rawmask), frames_logical, np.asarray(monitor)
 
 
 def reload_bcdi_data(
-    data,
-    mask,
-    scan_number,
-    setup,
-    normalize=False,
-    debugging=False,
+    data: np.ndarray,
+    mask: np.ndarray,
+    scan_number: int,
+    setup: "Setup",
+    normalize: bool = False,
+    debugging: bool = False,
     **kwargs,
-):
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Reload BCDI data, apply optional threshold, normalization and binning.
 
@@ -1498,6 +1060,12 @@ def reload_bcdi_data(
     :param debugging:  set to True to see plots
     :parama kwargs:
 
+     - 'frames_pattern': None or list of int.
+       Use this if you need to remove some frames, and you know it in advance. You can
+       provide a binary list of length the number of images in the dataset. If
+       frames_pattern is 0 at index, the frame at data[index] will be skipped, if 1 the
+       frame will be added to the stack. Or you can directly specify the indices of the
+       frames to be skipped, e.g. [0, 127] to skip frames at indices 0 and 127.
      - 'photon_threshold' = float, photon threshold to apply before binning
      - 'logger': an optional logger
 
@@ -1511,8 +1079,7 @@ def reload_bcdi_data(
     # check and load kwargs
     valid.valid_kwargs(
         kwargs=kwargs,
-        allowed_kwargs={"logger", "photon_threshold"},
-        name="kwargs",
+        allowed_kwargs={"frames_pattern", "logger", "photon_threshold"},
     )
     photon_threshold = kwargs.get("photon_threshold", 0)
     valid.valid_item(
@@ -1523,7 +1090,9 @@ def reload_bcdi_data(
     )
 
     nbz, nby, nbx = data.shape
-    frames_logical = np.ones(nbz)
+    setup.frames_logical = util.generate_frames_logical(
+        nb_images=nbz, frames_pattern=kwargs.get("frames_pattern")
+    )
 
     logger.info(f"{(data < 0).sum()} negative data points masked")
     # can happen when subtracting a background
@@ -1533,7 +1102,7 @@ def reload_bcdi_data(
     # normalize by the incident X-ray beam intensity
     if normalize == "skip":
         logger.info("Skip intensity normalization")
-        monitor = []
+        monitor = np.ones(nbz)
     else:  # use the default monitor of the beamline
         monitor = setup.loader.read_monitor(
             scan_number=scan_number,
@@ -1556,7 +1125,7 @@ def reload_bcdi_data(
         or setup.detector.roi[3] - setup.detector.roi[2] > nbx
     ):
         start = (np.nan, min(0, setup.detector.roi[0]), min(0, setup.detector.roi[2]))
-        logger.info("Paddind the data to the shape defined by the ROI")
+        logger.info("Padding the data to the shape defined by the ROI")
         data = util.crop_pad(
             array=data,
             pad_start=start,
@@ -1610,64 +1179,4 @@ def reload_bcdi_data(
             )
         )
 
-    return data, mask, frames_logical, monitor
-
-
-def zero_pad(array, padding_width=np.zeros(6), mask_flag=False, debugging=False):
-    """
-    Pad obj with zeros.
-
-    :param array: 3D array to be padded
-    :param padding_width: number of zero pixels to padd on each side
-    :param mask_flag: set to True to pad with 1, False to pad with 0
-    :type mask_flag: bool
-    :param debugging: set to True to see plots
-    :type debugging: bool
-    :return: obj padded with zeros
-    """
-    valid.valid_ndarray(arrays=array, ndim=3)
-    nbz, nby, nbx = array.shape
-
-    if debugging:
-        gu.multislices_plot(
-            array=array,
-            sum_frames=False,
-            plot_colorbar=True,
-            vmin=0,
-            vmax=1,
-            title="Array before padding",
-        )
-
-    if mask_flag:
-        newobj = np.ones(
-            (
-                nbz + padding_width[0] + padding_width[1],
-                nby + padding_width[2] + padding_width[3],
-                nbx + padding_width[4] + padding_width[5],
-            )
-        )
-    else:
-        newobj = np.zeros(
-            (
-                nbz + padding_width[0] + padding_width[1],
-                nby + padding_width[2] + padding_width[3],
-                nbx + padding_width[4] + padding_width[5],
-            )
-        )
-
-    newobj[
-        padding_width[0] : padding_width[0] + nbz,
-        padding_width[2] : padding_width[2] + nby,
-        padding_width[4] : padding_width[4] + nbx,
-    ] = array
-
-    if debugging:
-        gu.multislices_plot(
-            array=newobj,
-            sum_frames=False,
-            plot_colorbar=True,
-            vmin=0,
-            vmax=1,
-            title="Array after padding",
-        )
-    return newobj
+    return data, mask, setup.frames_logical, monitor

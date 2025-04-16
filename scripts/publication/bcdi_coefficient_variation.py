@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
@@ -110,7 +109,6 @@ datasets = {new_list: [] for new_list in fieldnames}  # create dictionnary
 datasets["scans"].append(scans)
 
 for index, item in enumerate(scans):
-
     file_path = filedialog.askopenfilename(
         initialdir=rootfolder,
         title="Select amp-disp-strain file for S" + str(item),

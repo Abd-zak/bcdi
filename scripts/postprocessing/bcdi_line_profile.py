@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
@@ -19,6 +18,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 import bcdi.graph.graph_utils as gu
+import bcdi.utils.format as fmt
 import bcdi.utils.utilities as util
 import bcdi.utils.validation as valid
 
@@ -464,10 +464,10 @@ gu.savefig(
 # save the result #
 ###################
 if debug:
-    print("output dictionary:\n", json.dumps(result, cls=util.CustomEncoder, indent=4))
+    print("output dictionary:\n", json.dumps(result, cls=fmt.CustomEncoder, indent=4))
 
 with open(savedir + "cut" + comment + ".json", "w", encoding="utf-8") as file:
-    json.dump(result, file, cls=util.CustomEncoder, ensure_ascii=False, indent=4)
+    json.dump(result, file, cls=fmt.CustomEncoder, ensure_ascii=False, indent=4)
 
 plt.ioff()
 plt.show()

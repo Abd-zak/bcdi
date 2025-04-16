@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -8,6 +6,7 @@
 """Functions related to the validation of input parameters."""
 
 from numbers import Number, Real
+from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -184,7 +183,7 @@ def valid_container(
     return True
 
 
-def valid_kwargs(kwargs, allowed_kwargs, name=None):
+def valid_kwargs(kwargs, allowed_kwargs, name="kwargs"):
     """
     Check if the provided parameters belong to the set of allowed kwargs.
 
@@ -196,9 +195,8 @@ def valid_kwargs(kwargs, allowed_kwargs, name=None):
     # check the validity of the parameters
     if not isinstance(kwargs, dict):
         raise TypeError("kwargs should be a dictionnary")
-    if name is not None and not isinstance(name, str):
+    if not isinstance(name, str):
         raise TypeError("name should be a string")
-    name = name or "obj"
 
     # check if requirements are satisfied
     if isinstance(allowed_kwargs, str):
@@ -433,8 +431,13 @@ def valid_1d_array(
 
 
 def valid_ndarray(
-    arrays, ndim=None, shape=None, fix_ndim=True, fix_shape=True, name=None
-):
+    arrays: Union[np.ndarray, Tuple[np.ndarray, ...]],
+    ndim: Optional[Union[int, Tuple[int, ...]]] = None,
+    shape: Optional[Tuple[int, ...]] = None,
+    fix_ndim: bool = True,
+    fix_shape: bool = True,
+    name: Optional[str] = None,
+) -> bool:
     """
     Check that arrays have the same shape and the correct number of dimensions.
 
@@ -447,7 +450,7 @@ def valid_ndarray(
     :return: True if checks pass, raise some error otherwise
     """
     # check the validity of the requirements
-    if isinstance(ndim, Number):
+    if isinstance(ndim, int):
         ndim = (ndim,)
     valid_container(
         ndim,

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -9,13 +7,11 @@
 
 import ctypes
 import gc
-import json
 import logging
 import os
 import shutil
 from collections import OrderedDict
 from functools import reduce
-from inspect import signature
 from logging import Logger
 from numbers import Integral, Real
 from pathlib import Path
@@ -36,22 +32,10 @@ from bcdi.utils import validation as valid
 module_logger = logging.getLogger(__name__)
 
 
-class CustomEncoder(json.JSONEncoder):
-    """Class to handle the serialization of np.ndarrays, sets."""
-
-    def default(self, obj):
-        """Override the JSONEncoder.default method to support more types."""
-        if isinstance(obj, np.ndarray):
-            return ndarray_to_list(obj)
-            # Let the base class default method raise the TypeError
-        if isinstance(obj, set):
-            return list(obj)
-        if isinstance(obj, (np.int32, np.int64)):
-            return int(obj)
-        return json.JSONEncoder.default(self, obj)
-
-
-def apply_logical_array(arrays, frames_logical):
+def apply_logical_array(
+    arrays: Union[Real, np.ndarray, Tuple[Union[Real, np.ndarray], ...]],
+    frames_logical: Optional[np.ndarray],
+) -> Union[Real, np.ndarray, Tuple[Union[Real, np.ndarray], ...]]:
     """
     Apply a logical array to a sequence of arrays.
 
@@ -64,11 +48,10 @@ def apply_logical_array(arrays, frames_logical):
      (added) frame
     :return: an array (if a single array was provided) or a tuple of cropped arrays
     """
+    if not isinstance(arrays, (tuple, list)):
+        arrays = (arrays,)
     if frames_logical is None:
         return arrays
-
-    if isinstance(arrays, np.ndarray):
-        arrays = (arrays,)
     valid.valid_1d_array(
         frames_logical,
         allowed_types=Integral,
@@ -80,7 +63,7 @@ def apply_logical_array(arrays, frames_logical):
     # number of measured frames during the experiment
     # frames_logical[idx]=-1 means that a frame was added (padding) at index idx
     original_frames = frames_logical[frames_logical != -1]
-    nb_original = int(original_frames.sum())
+    nb_original = len(original_frames)
 
     output = []
     for array in arrays:
@@ -93,8 +76,8 @@ def apply_logical_array(arrays, frames_logical):
             output.append(array[original_frames != 0])
 
     if len(arrays) == 1:
-        output = output[0]  # return the array instead of the tuple
-    return output
+        return np.asarray(output[0])  # return the array instead of the tuple
+    return tuple(output)
 
 
 def bin_data(array, binning, debugging=False, **kwargs):
@@ -176,7 +159,9 @@ def bin_data(array, binning, debugging=False, **kwargs):
     return newarray
 
 
-def bin_parameters(binning, nb_frames, params, debugging=True):
+def bin_parameters(
+    binning: int, nb_frames: int, params: List[Any], debugging: bool = True
+) -> List[Any]:
     """
     Bin some parameters.
 
@@ -224,14 +209,18 @@ def bin_parameters(binning, nb_frames, params, debugging=True):
 
 
 def cast(
-    val: Union[float, List, np.ndarray], target_type: type = float
+    val: Union[float, List, np.ndarray], target_type: type = float, **kwargs
 ) -> Union[float, List, np.ndarray]:
     """
     Cast val to a number or an array of numbers of the target type.
 
     :param val: the value to be converted
     :param target_type: the type to convert to
+    :param kwargs:
+     - 'logger': an optional logger
+
     """
+    logger = kwargs.get("logger", module_logger)
     if not isinstance(target_type, type):
         raise TypeError("target_type should be a type")
     if target_type not in [int, float]:
@@ -245,7 +234,7 @@ def cast(
             val = target_type(val)
         return val
     except (TypeError, ValueError):
-        print(f"Cannot cast to {target_type}")
+        logger.info(f"Cannot cast {val} to {target_type}")
         raise
 
 
@@ -569,6 +558,64 @@ def dos2unix(input_file: str, savedir: str) -> None:
             output.write(row + str.encode("\n"))
 
 
+def find_crop_center(array_shape, crop_shape, pivot):
+    """
+    Find the position of the center of the cropping window.
+
+    It finds the closest voxel to pivot which allows to crop an array of array_shape to
+    crop_shape.
+
+    :param array_shape: initial shape of the array
+    :type array_shape: tuple
+    :param crop_shape: final shape of the array
+    :type crop_shape: tuple
+    :param pivot: position on which the final region of interest dhould be centered
+     (center of mass of the Bragg peak)
+    :type pivot: tuple
+    :return: the voxel position closest to pivot which allows cropping to the defined
+     shape.
+    """
+    valid.valid_container(
+        array_shape,
+        container_types=(tuple, list, np.ndarray),
+        min_length=1,
+        item_types=int,
+        name="array_shape",
+    )
+    ndim = len(array_shape)
+    valid.valid_container(
+        crop_shape,
+        container_types=(tuple, list, np.ndarray),
+        length=ndim,
+        item_types=int,
+        name="crop_shape",
+    )
+    valid.valid_container(
+        pivot,
+        container_types=(tuple, list, np.ndarray),
+        length=ndim,
+        item_types=int,
+        name="pivot",
+    )
+    crop_center = np.empty(ndim)
+    for idx, _ in enumerate(range(ndim)):
+        if max(0, pivot[idx] - crop_shape[idx] // 2) == 0:
+            # not enough range on this side of the com
+            crop_center[idx] = crop_shape[idx] // 2
+        else:
+            if (
+                min(array_shape[idx], pivot[idx] + crop_shape[idx] // 2)
+                == array_shape[idx]
+            ):
+                # not enough range on this side of the com
+                crop_center[idx] = array_shape[idx] - crop_shape[idx] // 2
+            else:
+                crop_center[idx] = pivot[idx]
+
+    crop_center = list(map(int, crop_center))
+    return crop_center
+
+
 def find_file(filename: Optional[str], default_folder: str, **kwargs) -> str:
     """
     Locate a file.
@@ -752,55 +799,6 @@ def fit3d_poly4(x_axis, a, b, c, d, e, f, g, h, i, j, k, m, n):
     )
 
 
-def create_repr(obj: Any, cls: type) -> str:
-    """
-    Generate the string representation of the object.
-
-    It uses the parameters given to __init__, except self, args and kwargs.
-
-    :param obj: the object for which the string representation should be generated
-    :param cls: the cls from which __init__ parameters should be extracted (e.g., base
-     class in case of inheritance)
-    :return: the string representation
-    """
-    if not isinstance(cls, type):
-        raise TypeError(f"'cls' should be a class, for {type(cls)}")
-    output = obj.__class__.__name__ + "("
-    for _, param in enumerate(
-        signature(cls.__init__).parameters.keys()  # type: ignore
-    ):
-        quote_mark = True
-        if param not in ["self", "args", "kwargs"]:
-            value = getattr(obj, param)
-            if isinstance(value, np.ndarray):
-                value = ndarray_to_list(value)
-            if callable(value):
-                value = value.__module__ + "." + value.__name__
-                # it's a string but we don't want to put it in quote mark in order to
-                # be able to call it directly
-                quote_mark = False
-            output += format_repr(param, value, quote_mark=quote_mark)
-
-    output += ")"
-    return str(output)
-
-
-def format_repr(field: str, value: Optional[Any], quote_mark: bool = True) -> str:
-    """
-    Format a string for the __repr__ method depending on its value.
-
-    :param field: str, the value of the field in __repr__
-    :param value: string or None
-    :param quote_mark: True to put quote marks around strings
-    :return: a string
-    """
-    if not isinstance(field, str):
-        raise TypeError(f"'field should be a string, got {type(field)}'")
-    if isinstance(value, str) and quote_mark:
-        return f'{field}="{value}", '.replace("\\", "/")
-    return f"{field}={value}, ".replace("\\", "/")
-
-
 def function_lmfit(params, x_axis, distribution, iterator=0):
     """
     Calculate distribution defined by lmfit Parameters.
@@ -942,6 +940,52 @@ def gaussian_window(window_shape, sigma=0.3, mu=0.0, voxel_size=None, debugging=
         )
 
     return window
+
+
+def generate_frames_logical(
+    nb_images: int, frames_pattern: Optional[List[int]]
+) -> np.ndarray:
+    """
+    Generate a logical array allowing ti discrad frames in the dataset.
+
+    :param nb_images: the number of 2D images in te dataset.
+    :param frames_pattern: user-provided list which can be:
+     - a binary list of length nb_images
+     - a list of the indices of frames to be skipped
+
+    :return: a binary numpy array of length nb_images
+    """
+    valid.valid_item(nb_images, allowed_types=int, min_excluded=0, name="nb_images")
+    if frames_pattern is None:
+        return np.ones(nb_images, dtype=int)
+
+    valid.valid_container(
+        frames_pattern,
+        container_types=list,
+        max_length=nb_images,
+        item_types=int,
+        min_included=0,
+        max_excluded=nb_images,
+        allow_none=False,
+        name="frames_pattern",
+    )
+
+    if len(frames_pattern) == nb_images:
+        if all(val in {0, 1} for val in frames_pattern):
+            return np.array(frames_pattern, dtype=int)
+        raise ValueError(f"A binary list of lenght {nb_images} is expected")
+
+    if len(set(frames_pattern)) != len(frames_pattern):
+        if all(val in {0, 1} for val in frames_pattern):
+            raise ValueError(
+                "frame_patterns is a binary list of length "
+                f"{len(frames_pattern)}, but there are {nb_images} images"
+            )
+        raise ValueError("Duplicated indices in frame_patterns")
+
+    frames_logical = np.ones(nb_images, dtype=int)
+    frames_logical[frames_pattern] = 0
+    return frames_logical
 
 
 def higher_primes(number, maxprime=13, required_dividers=(4,)):
@@ -1530,22 +1574,6 @@ def move_log(result: Tuple[Path, Path, Optional[Logger]]):
     logger.info(f"{filename.replace('.log', '')} processed")
 
 
-def ndarray_to_list(array: np.ndarray) -> List:
-    """
-    Convert a numpy ndarray of any dimension to a nested list.
-
-    :param array: the array to be converted
-    """
-    if not isinstance(array, np.ndarray):
-        raise TypeError("a numpy ndarray is expected")
-    if array.ndim == 1:
-        return list(array)
-    output = []
-    for idx in range(array.shape[0]):
-        output.append(ndarray_to_list(array[idx]))
-    return output
-
-
 def objective_lmfit(params, x_axis, data, distribution):
     """
     Calculate the total residual for fits to several data sets.
@@ -1591,13 +1619,19 @@ def line(x_array, a, b):
     return a * x_array + b
 
 
-def pad_from_roi(arrays, roi, binning, pad_value=0, **kwargs):
+def pad_from_roi(
+    arrays: Union[np.ndarray, Tuple[np.ndarray, ...]],
+    roi: List[int],
+    binning: Tuple[int, int],
+    pad_value: Union[float, Tuple[float, ...]] = 0.0,
+    **kwargs,
+) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
     """
     Pad a 3D stack of frames provided a region of interest.
 
     The stacking is assumed to be on the first axis.
 
-    :param arrays: a 3D array of a sequence of 3D arrays of the same shape
+    :param arrays: a 3D array or a sequence of 3D arrays of the same shape
     :param roi: the desired region of interest of the unbinned frame. For an array in
      arrays, the shape is (nz, ny, nx), and roi corresponds to [y0, y1, x0, x1]
     :param binning: tuple of two integers (binning along Y, binning along X)
@@ -1608,7 +1642,7 @@ def pad_from_roi(arrays, roi, binning, pad_value=0, **kwargs):
     :return: an array (if a single array was provided) or a tuple of arrays interpolated
      on an orthogonal grid (same length as the number of input arrays)
     """
-    logger = kwargs.get("logger", module_logger)
+    logger: Logger = kwargs.get("logger", module_logger)
     ####################
     # check parameters #
     ####################
@@ -1628,7 +1662,7 @@ def pad_from_roi(arrays, roi, binning, pad_value=0, **kwargs):
         length=2,
         name="binning",
     )
-    if isinstance(pad_value, Real):
+    if isinstance(pad_value, float):
         pad_value = (pad_value,) * nb_arrays
     valid.valid_container(
         pad_value,
@@ -1676,8 +1710,8 @@ def pad_from_roi(arrays, roi, binning, pad_value=0, **kwargs):
             output_arrays.append(array)
 
         if nb_arrays == 1:
-            output_arrays = output_arrays[0]  # return the array instead of the tuple
-        return output_arrays
+            return np.asarray(output_arrays[0])  # return the array instead of the tuple
+        return tuple(output_arrays)
     return arrays
 
 
@@ -2287,8 +2321,11 @@ def rotate_crystal(
 
 
 def rotate_vector(
-    vectors, axis_to_align=None, reference_axis=None, rotation_matrix=None
-):
+    vectors: Union[np.ndarray, Tuple[np.ndarray, ...]],
+    axis_to_align: Optional[np.ndarray] = None,
+    reference_axis: Optional[np.ndarray] = None,
+    rotation_matrix: Optional[np.ndarray] = None,
+) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
     """
     Rotate vectors.
 
@@ -2530,6 +2567,28 @@ def unpack_array(
     if isinstance(array, (list, tuple, np.ndarray)) and len(array) == 1:
         return array[0]
     return np.asarray(array)
+
+
+def update_frames_logical(
+    frames_logical: np.ndarray, logical_subset: np.ndarray
+) -> np.ndarray:
+    """
+    Update frames_logical with a logical array of smaller length.
+
+    The number of non-zero elements of frames_logical should be equal to the length of
+    the logical subset.
+    """
+    if len(np.where(frames_logical != 0)[0]) != len(logical_subset):
+        raise ValueError(
+            f"len(frames_logical != 0)={len(np.where(frames_logical != 0)[0])} "
+            f"but len(logical_subset)={len(logical_subset)}"
+        )
+    counter = 0
+    for idx, val in enumerate(frames_logical):
+        if val != 0:
+            frames_logical[idx] = logical_subset[counter]
+            counter += 1
+    return frames_logical
 
 
 def upsample(array: Union[np.ndarray, List], factor: int = 2) -> np.ndarray:

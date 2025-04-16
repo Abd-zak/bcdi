@@ -1,11 +1,8 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
 #       authors:
 #         Jerome Carnis, carnis_jerome@yahoo.fr
-
 import os
 import unittest
 
@@ -14,8 +11,9 @@ from pyfakefs import fake_filesystem_unittest
 
 from bcdi.experiment.beamline import create_beamline
 from bcdi.experiment.loader import LoaderID01, create_loader
-from bcdi.experiment.setup import Setup
-from tests.config import run_tests
+from tests.config import load_config, run_tests
+
+parameters, skip_tests = load_config("preprocessing")
 
 
 class TestInitPath(fake_filesystem_unittest.TestCase):
@@ -89,6 +87,30 @@ class TestInitPath(fake_filesystem_unittest.TestCase):
         self.assertEqual(specfile, "test")
         self.assertEqual(template_imagefile, "data_mpx4_%05d.edf.gz")
 
+    def test_init_paths_BM02(self):
+        self.template_imagefile = "sample_name%04d.edf"
+        self.specfile_name = "test"
+        self.beamline = create_beamline("BM02")
+        params = {
+            "root_folder": self.root_dir,
+            "sample_name": self.sample_name,
+            "scan_number": self.scan_number,
+            "specfile_name": self.specfile_name,
+            "template_imagefile": self.template_imagefile,
+        }
+        (
+            homedir,
+            default_dirname,
+            specfile,
+            template_imagefile,
+        ) = self.beamline.loader.init_paths(**params)
+        self.assertEqual(
+            homedir, self.root_dir + self.sample_name + str(self.scan_number) + "/"
+        )
+        self.assertEqual(default_dirname, "data/")
+        self.assertEqual(specfile, "test")
+        self.assertEqual(template_imagefile, "sample_name%04d.edf")
+
     def test_init_paths_ID01_BLISS(self):
         self.template_imagefile = "exp1_scan5.h5"
         self.specfile_name = None
@@ -130,7 +152,7 @@ class TestInitPath(fake_filesystem_unittest.TestCase):
         ) = self.beamline.loader.init_paths(**params)
         self.assertEqual(
             homedir,
-            self.root_dir + self.sample_name + "{:06d}".format(self.scan_number) + "/",
+            f"{self.root_dir}{self.sample_name}{self.scan_number:06d}/",
         )
         self.assertEqual(default_dirname, "data/")
         self.assertEqual(specfile, None)
@@ -155,12 +177,10 @@ class TestInitPath(fake_filesystem_unittest.TestCase):
         ) = self.beamline.loader.init_paths(**params)
         self.assertEqual(
             homedir,
-            self.root_dir + self.sample_name + "_{:05d}".format(self.scan_number) + "/",
+            f"{self.root_dir}{self.sample_name}_{self.scan_number:05d}/",
         )
         self.assertEqual(default_dirname, "e4m/")
-        self.assertEqual(
-            specfile, self.sample_name + "_{:05d}".format(self.scan_number)
-        )
+        self.assertEqual(specfile, f"{self.sample_name}_{self.scan_number:05d}")
         self.assertEqual(template_imagefile, "S_00001_master.h5")
 
     def test_init_paths_specfile_P10_full_path(self):
@@ -188,7 +208,7 @@ class TestInitPath(fake_filesystem_unittest.TestCase):
         ) = self.beamline.loader.init_paths(**params)
         self.assertEqual(
             homedir,
-            self.root_dir + self.sample_name + "_{:05d}".format(self.scan_number) + "/",
+            f"{self.root_dir}{self.sample_name}_{self.scan_number:05d}/",
         )
         self.assertEqual(default_dirname, "e4m/")
         self.assertEqual(specfile, params["specfile_name"])
@@ -254,6 +274,9 @@ class TestRetrieveDistance(fake_filesystem_unittest.TestCase):
         self.setUpPyfakefs()
         self.valid_path = "/gpfs/bcdi/data/"
         os.makedirs(self.valid_path)
+        self.beamline = create_beamline("ID01")
+
+    def test_distance_defined(self):
         with open(self.valid_path + "defined.spec", "w") as f:
             f.write(
                 "test\n#UDETCALIB cen_pix_x=11.195,cen_pix_y=281.115,"
@@ -261,24 +284,24 @@ class TestRetrieveDistance(fake_filesystem_unittest.TestCase):
                 "det_distance_CC=1.434,det_distance_COM=1.193,"
                 "timestamp=2021-02-28T13:01:16.615422"
             )
-
-        with open(self.valid_path + "undefined.spec", "w") as f:
-            f.write("test\n#this,is,bad")
-        self.setup = Setup(beamline_name="ID01", detector_name="Maxipix")
-        self.setup.detector.rootdir = self.valid_path
-        self.beamline = create_beamline(name="ID01")
-
-    def test_distance_defined(self):
-        self.setup.detector.specfile = "defined.spec"
-
-        distance = self.beamline.loader.retrieve_distance(self.setup)
+        distance = self.beamline.loader.retrieve_distance(
+            filename="defined.spec", default_folder=self.valid_path
+        )
         self.assertTrue(np.isclose(distance, 1.193))
 
     def test_distance_undefined(self):
-        self.setup.detector.specfile = "undefined.spec"
-
-        distance = self.beamline.loader.retrieve_distance(self.setup)
+        with open(self.valid_path + "undefined.spec", "w") as f:
+            f.write("test\n#this,is,bad")
+        distance = self.beamline.loader.retrieve_distance(
+            filename="undefined.spec", default_folder=self.valid_path
+        )
         self.assertTrue(distance is None)
+
+    def test_distance_not_a_spec_file(self):
+        with self.assertRaises(ValueError):
+            self.beamline.loader.retrieve_distance(
+                filename="undefined.txt", default_folder=self.valid_path
+            )
 
 
 class TestRepr(unittest.TestCase):
@@ -288,7 +311,6 @@ class TestRepr(unittest.TestCase):
         self.loader = create_loader(name="ID01", sample_offsets=(0, 0, 0))
 
     def test_return_type(self):
-        print(repr(self.loader))
         self.assertIsInstance(eval(repr(self.loader)), LoaderID01)
 
 

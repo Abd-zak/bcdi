@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
@@ -366,9 +365,9 @@ if projection_method == "stereographic":
             coordinates[idx, 1] = stereo_proj[
                 idx, 2
             ]  # use u values for the projection from North pole
-            coordinates[
-                idx, 2
-            ] = 1  # use values from labels_bottom (projection from North pole)
+            coordinates[idx, 2] = (
+                1  # use values from labels_bottom (projection from North pole)
+            )
         else:
             coordinates[idx, 0] = stereo_proj[
                 idx, 1
@@ -376,9 +375,9 @@ if projection_method == "stereographic":
             coordinates[idx, 1] = stereo_proj[
                 idx, 0
             ]  # use u values for the projection from South pole
-            coordinates[
-                idx, 2
-            ] = 0  # use values from labels_top (projection from South pole)
+            coordinates[idx, 2] = (
+                0  # use values from labels_top (projection from South pole)
+            )
     del stereo_proj
     gc.collect()
 
@@ -410,9 +409,9 @@ if projection_method == "stereographic":
         else:
             label_idx = 0  # duplicated facet, set it to the background
         normals_label[idx] = label_idx  # attribute the label to the normal
-        vertices_label[
-            faces[idx, :]
-        ] = label_idx  # attribute the label to the corresponding vertices
+        vertices_label[faces[idx, :]] = (
+            label_idx  # attribute the label to the corresponding vertices
+        )
     del labels_top, labels_bottom
 elif projection_method == "equirectangular":
     labels, longitude_latitude = fu.equirectangular_proj(
@@ -455,9 +454,9 @@ elif projection_method == "equirectangular":
     for idx in range(nb_normals):
         label_idx = labels[coordinates[idx, 0], coordinates[idx, 1]]
         normals_label[idx] = label_idx  # attribute the label to the normal
-        vertices_label[
-            faces[idx, :]
-        ] = label_idx  # attribute the label to the corresponding vertices
+        vertices_label[faces[idx, :]] = (
+            label_idx  # attribute the label to the corresponding vertices
+        )
 
 else:
     print("Invalid value for projection_method")
@@ -531,11 +530,11 @@ support[abs(amp) > support_threshold * abs(amp).max()] = 1
 zcom_support, ycom_support, xcom_support = center_of_mass(support)
 print(
     "\nCOM at (z, y, x): (",
-    str("{:.2f}".format(zcom_support)),
+    str(f"{zcom_support:.2f}"),
     ",",
-    str("{:.2f}".format(ycom_support)),
+    str(f"{ycom_support:.2f}"),
     ",",
-    str("{:.2f}".format(xcom_support)),
+    str(f"{xcom_support:.2f}"),
     ")",
 )
 coordination_matrix = pu.calc_coordination(
@@ -595,21 +594,21 @@ with open(
     "w",
 ) as allpoints_file:
     summary_file.write(
-        "{0: <10}".format("Plane #")
+        "{: <10}".format("Plane #")
         + "\t"
-        + "{0: <10}".format("angle")
+        + "{: <10}".format("angle")
         + "\t"
-        + "{0: <10}".format("points #")
+        + "{: <10}".format("points #")
         + "\t"
-        + "{0: <10}".format("<strain>")
+        + "{: <10}".format("<strain>")
         + "\t"
-        + "{0: <10}".format("std dev")
+        + "{: <10}".format("std dev")
         + "\t"
-        + "{0: <10}".format("A (x)")
+        + "{: <10}".format("A (x)")
         + "\t"
-        + "{0: <10}".format("B (y)")
+        + "{: <10}".format("B (y)")
         + "\t"
-        + "{0: <10}".format("C (z)")
+        + "{: <10}".format("C (z)")
         + "\t"
         + "D (Ax+By+CZ+D=0)"
         + "\t"
@@ -617,17 +616,17 @@ with open(
     )
 
     allpoints_file.write(
-        "{0: <10}".format("Plane #")
+        "{: <10}".format("Plane #")
         + "\t"
-        + "{0: <10}".format("angle")
+        + "{: <10}".format("angle")
         + "\t"
-        + "{0: <10}".format("strain")
+        + "{: <10}".format("strain")
         + "\t"
-        + "{0: <10}".format("Z")
+        + "{: <10}".format("Z")
         + "\t"
-        + "{0: <10}".format("Y")
+        + "{: <10}".format("Y")
         + "\t"
-        + "{0: <10}".format("X")
+        + "{: <10}".format("X")
         + "\n"
     )
 
@@ -643,7 +642,7 @@ with open(
     pd.GetArray(0).SetName("amp")
 
     # update vti file with edges
-    edges_array = np.transpose((np.flip(edges, 2))).reshape(edges.size)
+    edges_array = np.transpose(np.flip(edges, 2)).reshape(edges.size)
     edges_array = numpy_support.numpy_to_vtk(edges_array)
     pd.AddArray(edges_array)
     pd.GetArray(1).SetName("edges")
@@ -786,7 +785,7 @@ with open(
         print(
             "Mean distance of plane ",
             label,
-            " to outer shell = " + str("{:.2f}".format(mean_dist)) + " pixels",
+            " to outer shell = " + str(f"{mean_dist:.2f}") + " pixels",
         )
 
         # offset the plane by mean_dist/2 and see if the plane is closer to
@@ -807,7 +806,7 @@ with open(
             "<distance> of plane ",
             label,
             " to outer shell after offsetting by mean_distance/2 = "
-            + str("{:.2f}".format(new_dist))
+            + str(f"{new_dist:.2f}")
             + " pixels",
         )
         # these directions are for a mesh smaller than the support
@@ -1166,6 +1165,7 @@ with open(
         elif projection_axis == 2:  # q aligned along the 3rd axis
             ref_axis = np.array([0, 0, 1])
         else:
+            ref_axis = np.zeros(3)
             print("projection_axis should be a basis axis of the reconstructed array")
             sys.exit()
 
@@ -1248,7 +1248,7 @@ with open(
         print(
             "Plane ",
             label,
-            " : {0} points before, {1} points after checking for duplicates".format(
+            " : {} points before, {} points after checking for duplicates".format(
                 number_before, nb_points
             ),
         )
@@ -1298,10 +1298,10 @@ with open(
     # update files #
     ################
     summary_file.write(
-        "\n" + "Isosurface value" + "\t" "{0: <10}".format(str(support_threshold))
+        "\n" + "Isosurface value" + "\t" f"{str(support_threshold): <10}"
     )
     allpoints_file.write(
-        "\n" + "Isosurface value" + "\t" "{0: <10}".format(str(support_threshold))
+        "\n" + "Isosurface value" + "\t" f"{str(support_threshold): <10}"
     )
 
 # export data to file

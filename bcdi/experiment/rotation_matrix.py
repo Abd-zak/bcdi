@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -13,7 +11,7 @@ from numbers import Real
 
 import numpy as np
 
-from bcdi.utils import utilities as util
+import bcdi.utils.format as fmt
 from bcdi.utils import validation as valid
 
 module_logger = logging.getLogger(__name__)
@@ -121,4 +119,4 @@ class RotationMatrix:
 
     def __repr__(self):
         """Representation string of the RotationMatrix instance."""
-        return util.create_repr(self, RotationMatrix)
+        return fmt.create_repr(self, RotationMatrix)

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # BCDI: tools for pre(post)-processing Bragg coherent X-ray diffraction imaging data
 #   (c) 07/2017-06/2019 : CNRS UMR 7344 IM2NP
 #   (c) 07/2019-05/2021 : DESY PHOTON SCIENCE
@@ -17,71 +15,52 @@ import datetime
 import logging
 import multiprocessing as mp
 import time
-from collections.abc import Sequence
 from numbers import Integral, Real
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator, griddata
 
+import bcdi.utils.format as fmt
 from bcdi.experiment.beamline import create_beamline
-from bcdi.experiment.beamline_factory import Beamline
+from bcdi.experiment.beamline_factory import BeamlineGoniometer, BeamlineSaxs
 from bcdi.experiment.detector import Detector, create_detector
 from bcdi.graph import graph_utils as gu
 from bcdi.utils import utilities as util
 from bcdi.utils import validation as valid
+from bcdi.utils.io_helper import ContextFile
 
 module_logger = logging.getLogger(__name__)
+
+
+def get_mean_tilt(
+    angles: Optional[Union[float, int, np.ndarray, List[Union[float, int]]]]
+) -> Optional[float]:
+    """
+    Calculate the mean tilt depending on the array of incident angles.
+
+    E.g., for input angles of [0, 0.25, 0.5, 0.75], the mean tilt is 0.25.
+    """
+    if angles is None:
+        return angles
+    if isinstance(angles, list):
+        angles = np.asarray(angles)
+    if isinstance(angles, (float, int)) or (
+        isinstance(angles, np.ndarray) and angles.size == 1
+    ):
+        return float(angles)
+    if isinstance(angles, np.ndarray) and angles.size > 1:
+        return float(np.mean(angles[1:] - angles[0:-1]))
+    raise TypeError(f"tilt_angle should be a ndarray, got {type(angles)}")
 
 
 class Setup:
     """
     Class for defining the experimental geometry.
 
-    :param beamline: str, name of the beamline
-    :param detector_name: str, name of the detector
-    :param beam_direction: direction of the incident X-ray beam in the frame
-     (z downstream,y vertical up,x outboard)
-    :param energy: energy setting of the beamline, in eV.
-    :param distance: sample to detector distance, in m.
-    :param outofplane_angle: vertical detector angle, in degrees.
-    :param inplane_angle: horizontal detector angle, in degrees.
-    :param tilt_angle: angular step of the rocking curve, in degrees.
-    :param rocking_angle: angle which is tilted during the rocking curve in
-     {'outofplane', 'inplane', 'energy'}
-    :param grazing_angle: tuple of motor positions for the goniometer circles below the
-     rocking angle. Leave None if there is no such circle.
+    :param parameters: dictionary of parameters
+    :param scan_index: index of the scan to analyze
     :param kwargs:
-
-     - 'direct_beam': [vertical, horizontal] list of two real numbers indicating the
-       position of the direct beam in pixels in the unbinned, full detector
-     - 'dirbeam_detector_angles': [outofplane, inplane] detector angles in degrees
-       for the direct beam measurement.
-     - 'filtered_data': boolean, True if the data and the mask to be loaded were
-       already preprocessed.
-     - 'custom_scan': boolean, True is the scan does not follow the beamline's usual
-       directory format.
-     - 'custom_images': list of images numbers when the scan does no follow
-       the beamline's usual directory format.
-     - 'custom_monitor': list of monitor values when the scan does no follow
-       the beamline's usual directory format. The number of values should be equal
-       to the number of elements in custom_images.
-     - 'custom_motors': list of motor values when the scan does no follow
-       the beamline's usual directory format.
-     - 'sample_inplane': sample inplane reference direction along the beam at
-       0 angles in xrayutilities frame (x is downstream, y outboard, and z vertical
-       up at zero incident angle).
-     - 'sample_outofplane': surface normal of the sample at 0 angles in xrayutilities
-       frame (x is downstream, y outboard, and z vertical up at zero incident angle).
-     - 'sample_offsets': list or tuple of three angles in degrees, corresponding to
-       the offsets of each of the sample circles (the offset for the most outer
-       circle should be at index 0). Convention: the sample offsets will be
-       subtracted to measurement the motor values.
-     - 'offset_inplane': inplane offset of the detector defined as the outer angle
-       in xrayutilities area detector calibration.
-     - 'actuators': optional dictionary that can be used to define the entries
-       corresponding to actuators in data files (useful at CRISTAL where the location
-       of data keeps changing)
      - 'logger': an optional logger
 
     """
@@ -99,90 +78,95 @@ class Setup:
 
     def __init__(
         self,
-        beamline_name,
-        detector_name="Dummy",
-        beam_direction=(1, 0, 0),
-        energy=None,
-        distance=None,
-        outofplane_angle=None,
-        inplane_angle=None,
-        tilt_angle=None,
-        rocking_angle=None,
-        grazing_angle=None,
+        parameters: Dict[str, Any],
+        scan_index: int = 0,
         **kwargs,
     ):
-
-        valid.valid_kwargs(
-            kwargs=kwargs,
-            allowed_kwargs={
-                "direct_beam",
-                "dirbeam_detector_angles",
-                "dirbeam_detector_position",
-                "filtered_data",
-                "custom_scan",
-                "custom_images",
-                "custom_monitor",
-                "custom_motors",
-                "sample_inplane",
-                "sample_outofplane",
-                "sample_offsets",
-                "offset_inplane",
-                "actuators",
-                "is_series",
-                "template_imagefile",
-                "roi",
-                "binning",
-                "preprocessing_binning",
-                "custom_pixelsize",
-                "linearity_func",
-                "logger",
-            },
-            name="Setup.__init__",
-        )
-        # kwarg for logging
         self.logger = kwargs.get("logger", module_logger)
-
-        # kwargs for loading and preprocessing data
-        self.dirbeam_detector_angles = kwargs.get("dirbeam_detector_angles")
-        self.dirbeam_detector_position = kwargs.get("dirbeam_detector_position")
-        self.direct_beam = kwargs.get("direct_beam")
-        self.filtered_data = kwargs.get("filtered_data", False)  # boolean
-        self.custom_scan = kwargs.get("custom_scan", False)  # boolean
-        self.custom_images = kwargs.get("custom_images")  # list or tuple
-        self.custom_monitor = kwargs.get("custom_monitor")  # list or tuple
-        self.custom_motors = kwargs.get("custom_motors")  # dictionnary
-        self.actuators = kwargs.get("actuators", {})  # list or tuple
-
-        # kwargs for xrayutilities, delegate the test on their values to xrayutilities
-        self.sample_inplane = kwargs.get("sample_inplane", (1, 0, 0))
-        self.sample_outofplane = kwargs.get("sample_outofplane", (0, 0, 1))
-        self.offset_inplane = kwargs.get("offset_inplane", 0)
-
-        # kwargs for series (several frames per point) at P10
-        self.is_series = kwargs.get("is_series", False)  # boolean
+        self.parameters = parameters
+        self.scan_index = scan_index
 
         # create the detector instance
-        self.detector_name = detector_name
-        self.detector = create_detector(name=detector_name, **kwargs)
+        self.detector_name = self.parameters.get("detector", "Dummy")
+        self.detector = create_detector(
+            name=self.detector_name,
+            roi=self.parameters.get("roi_detector"),
+            sum_roi=self.parameters.get("sum_roi"),
+            binning=self.parameters.get("phasing_binning", (1, 1, 1)),
+            preprocessing_binning=self.parameters.get(
+                "preprocessing_binning", (1, 1, 1)
+            ),
+            offsets=self.parameters.get("sample_offsets"),
+            linearity_func=self.parameters.get("linearity_func"),
+            logger=self.logger,
+        )
 
         # create the beamline instance
-        self.beamline_name = beamline_name
-        self.beamline = create_beamline(name=beamline_name, **kwargs)
+        self.beamline_name = self.parameters["beamline"]
+        self.beamline = create_beamline(
+            name=self.beamline_name,
+            sample_offsets=self.parameters.get("sample_offsets"),
+            logger=self.logger,
+        )
 
         # load positional arguments corresponding to instance properties
-        self.beam_direction = beam_direction
-        self.energy = energy
-        self.distance = distance
-        self.outofplane_angle = outofplane_angle
-        self.inplane_angle = inplane_angle
-        self.tilt_angle = tilt_angle
-        self.rocking_angle = rocking_angle
-        self.grazing_angle = grazing_angle
+        self.beam_direction = self.parameters.get("beam_direction", (1, 0, 0))
+        self.energy = self.parameters.get("energy")
+        self.distance = self.parameters.get("detector_distance")
+        self.outofplane_angle = self.parameters.get("outofplane_angle")
+        self.inplane_angle = self.parameters.get("inplane_angle")
+        self.tilt_angle = self.parameters.get("tilt_angle")
+        self.rocking_angle = self.parameters.get("rocking_angle")
+        self.grazing_angle = self.parameters.get("grazing_angle")
+
+        # parameters for  loading and preprocessing data
+        self.dirbeam_detector_angles = self.parameters.get("dirbeam_detector_angles")
+        self.dirbeam_detector_position = self.parameters.get(
+            "dirbeam_detector_position"
+        )
+        self.direct_beam = self.parameters.get("direct_beam")
+        self.filtered_data = self.parameters.get("filtered_data", False)  # boolean
+        self.custom_scan = self.parameters.get("custom_scan", False)  # boolean
+        self.custom_images = self.parameters.get("custom_images")  # list or tuple
+        self.custom_monitor = self.parameters.get("custom_monitor")  # list or tuple
+        self.custom_motors = self.parameters.get("custom_motors")  # dictionnary
+        self.actuators = self.parameters.get("actuators", {})  # list or tuple
+
+        # parameters for xrayutilities
+        self.sample_inplane = self.parameters.get("sample_inplane", (1, 0, 0))
+        self.sample_outofplane = self.parameters.get("sample_outofplane", (0, 0, 1))
+        self.offset_inplane = self.parameters.get("offset_inplane", 0)
+
+        # parameters for series (several frames per point) at P10
+        self.is_series = self.parameters.get("is_series", False)  # boolean
 
         # initialize other attributes
+        self.logfile: Optional[ContextFile] = None
         self.detector_position: Optional[Tuple[Real, Real, Real]] = None
-        self.logfile = None
-        self.tilt_angles = None  # will store the array of tilt values
+        self.tilt_angles: Optional[np.ndarray] = None
+        self.frames_logical: Optional[np.ndarray] = None
+
+        # initialize the paths and the logfile
+        self.initialize_analysis()
+
+    def initialize_analysis(self) -> None:
+        """Initialize the paths, logfile and load motor positions."""
+        self.init_paths(
+            sample_name=self.parameters["sample_name"][self.scan_index],
+            scan_number=self.scan_nb,
+            data_dir=self.parameters["data_dir"][self.scan_index],
+            root_folder=self.parameters["root_folder"],
+            save_dir=self.parameters["save_dir"][self.scan_index],
+            save_dirname=self.parameters["save_dirname"],
+            specfile_name=self.parameters["specfile_name"][self.scan_index],
+            template_imagefile=self.parameters["template_imagefile"][self.scan_index],
+        )
+        self.create_logfile(
+            scan_number=self.scan_nb,
+            root_folder=self.parameters["root_folder"],
+            filename=self.detector.specfile,
+        )
+        self.read_logfile(scan_number=self.scan_nb)
 
     @property
     def actuators(self):
@@ -205,7 +189,7 @@ class Setup:
         self._actuators = value
 
     @property
-    def beam_direction(self):
+    def beam_direction(self) -> np.ndarray:
         """
         Direction of the incident X-ray beam.
 
@@ -214,7 +198,7 @@ class Setup:
         return self._beam_direction
 
     @beam_direction.setter
-    def beam_direction(self, value):
+    def beam_direction(self, value: List[float]) -> None:
         valid.valid_container(
             value,
             container_types=(tuple, list, np.ndarray),
@@ -222,22 +206,22 @@ class Setup:
             item_types=Real,
             name="Setup.beam_direction",
         )
-        value = np.asarray(value)
-        if np.linalg.norm(value) == 0:
+        value_as_array = np.asarray(value)
+        if np.linalg.norm(value_as_array) == 0:
             raise ValueError(
                 "At least of component of beam_direction should be non null."
             )
-        self._beam_direction = value / np.linalg.norm(value)
+        self._beam_direction = value_as_array / float(np.linalg.norm(value_as_array))
 
     @property
-    def beam_direction_xrutils(self):
+    def beam_direction_xrutils(self) -> np.ndarray:
         """
         Direction of the incident X-ray beam in xrayutilities frame.
 
         xrayutilities frame convention: (x downstream, y outboard, z vertical up).
         """
         u, v, w = self._beam_direction  # (u downstream, v vertical up, w outboard)
-        return u, w, v
+        return np.array([u, w, v])
 
     @property
     def name(self):
@@ -484,7 +468,7 @@ class Setup:
             raise TypeError("energy should be a number or a list of numbers, in eV")
 
     @property
-    def exit_wavevector(self):
+    def exit_wavevector(self) -> np.ndarray:
         """
         Calculate the exit wavevector kout.
 
@@ -493,7 +477,11 @@ class Setup:
 
         :return: kout vector
         """
-        return self.beamline.exit_wavevector(
+        if self.inplane_angle is None or self.outofplane_angle is None:
+            raise ValueError("detector angles are None")
+        if self.wavelength is None:
+            raise ValueError("wavelength is None")
+        return self.beamline.exit_wavevector(  # type: ignore
             inplane_angle=self.inplane_angle,
             outofplane_angle=self.outofplane_angle,
             wavelength=self.wavelength,
@@ -516,6 +504,30 @@ class Setup:
         self._filtered_data = value
 
     @property
+    def frames_logical(self) -> Optional[np.ndarray]:
+        """
+        Specify invalid frames using a logical array.
+
+        1D array of length equal to the number of measured frames.
+        In case of cropping the length of the stack of frames changes. A frame whose
+        index is set to 1 means that it is used, 0 means not used.
+        """
+        return self._frames_logical
+
+    @frames_logical.setter
+    def frames_logical(self, value: Optional[np.ndarray]) -> None:
+        valid.valid_1d_array(
+            value,
+            allowed_types=Integral,
+            allow_none=True,
+            allowed_values=(-1, 0, 1),
+            name="frames_logical",
+        )
+        self._frames_logical = value
+        if self._frames_logical is not None:
+            self.apply_frames_logical()
+
+    @property
     def grazing_angle(self):
         """
         Motor positions for the goniometer circles below the rocking angle.
@@ -536,7 +548,7 @@ class Setup:
         self._grazing_angle = value
 
     @property
-    def incident_wavevector(self):
+    def incident_wavevector(self) -> np.ndarray:
         """
         Calculate the incident wavevector kout.
 
@@ -545,6 +557,8 @@ class Setup:
 
         :return: kin vector
         """
+        if self.wavelength is None:
+            raise ValueError("wavelength is None")
         return 2 * np.pi / self.wavelength * self.beam_direction
 
     @property
@@ -645,15 +659,20 @@ class Setup:
         }
 
     @property
-    def q_laboratory(self):
+    def q_laboratory(self) -> Optional[np.ndarray]:
         """
         Calculate the diffusion vector in the laboratory frame.
 
         Frame convention: (z downstream, y vertical up, x outboard). The unit is 1/A.
 
-        :return: a tuple of three vectors components.
+        :return: ndarray of three vectors components.
         """
-        return (self.exit_wavevector - self.incident_wavevector) * 1e-10
+        if self.exit_wavevector.ndim > 1:  # energy scan
+            return None
+        q_laboratory = (self.exit_wavevector - self.incident_wavevector) * 1e-10
+        if np.isclose(np.linalg.norm(q_laboratory), 0, atol=1e-15):
+            raise ValueError("q_laboratory is null")
+        return q_laboratory  # type: ignore
 
     @property
     def rocking_angle(self):
@@ -679,13 +698,17 @@ class Setup:
             self._rocking_angle = value
 
     @property
+    def scan_nb(self) -> int:
+        return int(self.parameters["scans"][self.scan_index])
+
+    @property
     def tilt_angle(self):
         """Angular step of the rocking curve, in degrees."""
         return self._tilt_angle
 
     @tilt_angle.setter
-    def tilt_angle(self, value):
-        if not isinstance(value, Real) and value is not None:
+    def tilt_angle(self, value: Union[float, int]) -> None:
+        if not isinstance(value, (float, int)) and value is not None:
             raise TypeError("tilt_angle should be a number in degrees")
         self._tilt_angle = value
 
@@ -698,7 +721,7 @@ class Setup:
 
     def __repr__(self):
         """Representation string of the Setup instance."""
-        return util.create_repr(self, Setup)
+        return fmt.create_repr(self, Setup)
 
     def calc_qvalues_xrutils(self, hxrd, nb_frames, **kwargs):
         """
@@ -711,10 +734,6 @@ class Setup:
         :param kwargs:
 
          - 'scan_number': the scan number to load
-         - 'frames_logical': array of length the number of measured frames.
-           In case of cropping/padding the number of frames changes. A frame whose
-           index is set to 1 means that it is used, 0 means not used, -1 means padded
-           (added) frame
 
         :return:
          - qx, qz, qy components for the dataset. xrayutilities uses the xyz crystal
@@ -726,9 +745,8 @@ class Setup:
 
         """
         # check some parameters
-        frames_logical = kwargs.get("frames_logical")
         valid.valid_1d_array(
-            frames_logical,
+            self.frames_logical,
             allow_none=True,
             allowed_types=Integral,
             allowed_values=(-1, 0, 1),
@@ -745,7 +763,7 @@ class Setup:
             setup=self,
             nb_frames=nb_frames,
             scan_number=scan_number,
-            frames_logical=frames_logical,
+            frames_logical=self.frames_logical,
         )
 
         # calculate q values
@@ -757,7 +775,29 @@ class Setup:
         self.logger.info(
             "Use the parameter 'sample_offsets' to correct diffractometer values."
         )
-        return qx, qz, qy, frames_logical
+        return qx, qz, qy, self.frames_logical
+
+    def apply_frames_logical(self) -> None:
+        """Crop setup attributes where data frames have been excluded."""
+        if isinstance(self.energy, np.ndarray):
+            self.energy = util.apply_logical_array(
+                arrays=self.energy,
+                frames_logical=self.frames_logical,
+            )
+            print("energy")
+        if isinstance(self.outofplane_angle, np.ndarray):
+            self.outofplane_angle = util.apply_logical_array(
+                arrays=self.outofplane_angle,
+                frames_logical=self.frames_logical,
+            )
+            print("outofplane_angle")
+        if isinstance(self.tilt_angles, np.ndarray):
+            self.tilt_angles = np.asarray(
+                util.apply_logical_array(
+                    arrays=self.tilt_angles,
+                    frames_logical=self.frames_logical,
+                )
+            )
 
     def check_setup(
         self,
@@ -805,11 +845,7 @@ class Setup:
             raise ValueError("the detector in-plane angle is not defined")
 
         self.tilt_angles = tilt_angle
-        if tilt_angle is not None:
-            tilt_angle = np.mean(
-                np.asarray(tilt_angle)[1:] - np.asarray(tilt_angle)[0:-1]
-            )
-        self.tilt_angle = self.tilt_angle or tilt_angle
+        self.tilt_angle = self.tilt_angle or get_mean_tilt(tilt_angle)
         if self.tilt_angle is None:
             raise ValueError("the tilt angle is not defined")
         if not isinstance(self.tilt_angle, Real):
@@ -868,7 +904,7 @@ class Setup:
 
     def correct_detector_angles(
         self,
-        bragg_peak_position: Optional[Tuple[int, ...]],
+        bragg_peak_position: Optional[List[int]],
         verbose: bool = True,
     ) -> None:
         """
@@ -1627,6 +1663,11 @@ class Setup:
          - a tuple of motor offsets used later for q calculation
 
         """
+        if not isinstance(self.beamline, BeamlineGoniometer):
+            raise TypeError(
+                "init_qconversion supports only for beamlines with goniometer, "
+                f"got {type(self.beamline)}"
+            )
         return self.beamline.init_qconversion(
             conversion_table=self.labframe_to_xrayutil,
             beam_direction=self.beam_direction_xrutils,
@@ -1739,7 +1780,11 @@ class Setup:
         # interpolate the diffraction pattern #
         #######################################
         if correct_curvature:
-            (arrays, q_values, offseted_direct_beam,) = self.transformation_cdi_ewald(
+            (
+                arrays,
+                q_values,
+                offseted_direct_beam,
+            ) = self.transformation_cdi_ewald(
                 arrays=arrays,
                 cdi_angle=cdi_angle,
                 fill_value=fill_value,
@@ -1757,18 +1802,22 @@ class Setup:
 
     def ortho_directspace(
         self,
-        arrays,
-        q_bragg,
-        initial_shape=None,
-        voxel_size=None,
-        fill_value=0,
-        reference_axis=(0, 1, 0),
-        verbose=True,
-        debugging=False,
+        arrays: Union[np.ndarray, Tuple[np.ndarray, ...]],
+        q_bragg: np.ndarray,
+        initial_shape: Optional[Tuple[int, int, int]] = None,
+        voxel_size: Optional[Tuple[float, float, float]] = None,
+        fill_value: Tuple[float, ...] = (0,),
+        reference_axis: Union[np.ndarray, Tuple[int, int, int]] = (0, 1, 0),
+        verbose: bool = True,
+        debugging: bool = False,
         **kwargs,
-    ):
+    ) -> Tuple[
+        Union[np.ndarray, List[np.ndarray]],
+        Tuple[float, float, float],
+        np.ndarray,
+    ]:
         """
-        Geometrical transformation in direct space.
+        Geometrical transformation in direct space, into the crystal frame.
 
         Interpolate arrays (direct space output of the phase retrieval) in the
         orthogonal reference frame where q_bragg is aligned onto the array axis
@@ -1776,7 +1825,7 @@ class Setup:
 
         :param arrays: tuple of 3D arrays of the same shape (output of the phase
          retrieval), in the detector frame
-        :param q_bragg: tuple of 3 vector components for the q values of the center
+        :param q_bragg: array of 3 vector components for the q values of the center
          of mass of the Bragg peak, expressed in an orthonormal frame x y z
         :param initial_shape: shape of the FFT used for phasing
         :param voxel_size: number or list of three user-defined voxel sizes for
@@ -1813,105 +1862,134 @@ class Setup:
         if isinstance(arrays, np.ndarray):
             arrays = (arrays,)
         valid.valid_ndarray(arrays, ndim=3)
-        nb_arrays = len(arrays)
-        input_shape = arrays[0].shape
-        # could be smaller than the shape used in phase retrieval,
-        # if the object was cropped around the support
+        current_shape = arrays[0].shape
 
-        #########################
-        # check and load kwargs #
-        #########################
-        valid.valid_kwargs(
-            kwargs=kwargs,
-            allowed_kwargs={"cmap", "title", "width_z", "width_y", "width_x"},
-            name="kwargs",
+        transfer_matrix, voxel_size = self.get_transfer_matrix_crystal_frame(
+            current_shape=current_shape,  # type: ignore
+            q_bragg=q_bragg,
+            reference_axis=reference_axis,
+            initial_shape=initial_shape,
+            voxel_size=voxel_size,
+            verbose=verbose,
         )
-        title = kwargs.get("title", ("Object",) * nb_arrays)
-        if isinstance(title, str):
-            title = (title,) * nb_arrays
-        valid.valid_container(
-            title,
-            container_types=(tuple, list),
-            length=nb_arrays,
-            item_types=str,
-            name="title",
-        )
-        width_z = kwargs.get("width_z")
-        valid.valid_item(
-            value=width_z,
-            allowed_types=int,
-            min_excluded=0,
-            allow_none=True,
-            name="width_z",
-        )
-        width_y = kwargs.get("width_y")
-        valid.valid_item(
-            value=width_y,
-            allowed_types=int,
-            min_excluded=0,
-            allow_none=True,
-            name="width_y",
-        )
-        width_x = kwargs.get("width_x")
-        valid.valid_item(
-            value=width_x,
-            allowed_types=int,
-            min_excluded=0,
-            allow_none=True,
-            name="width_x",
+        output_arrays, voxel_size, transfer_matrix = self.interpolate_direct_space(
+            arrays=arrays,
+            current_shape=current_shape,
+            transfer_matrix=transfer_matrix,
+            voxel_size=voxel_size,
+            fill_value=fill_value,
+            verbose=verbose,
+            debugging=debugging,
+            **kwargs,
         )
 
+        return output_arrays, voxel_size, transfer_matrix
+
+    def ortho_directspace_labframe(
+        self,
+        arrays: Union[np.ndarray, Tuple[np.ndarray, ...]],
+        initial_shape: Optional[Tuple[int, int, int]] = None,
+        voxel_size: Optional[Tuple[float, float, float]] = None,
+        fill_value: Tuple[float, ...] = (0,),
+        verbose: bool = True,
+        debugging: bool = False,
+        **kwargs,
+    ) -> Tuple[
+        Union[np.ndarray, List[np.ndarray]],
+        Tuple[float, float, float],
+        np.ndarray,
+    ]:
+        """
+        Geometrical transformation in direct space, into the laboratory frame.
+
+        Interpolate arrays (direct space output of the phase retrieval) in the
+        orthogonal laboratory frame.
+
+        :param arrays: tuple of 3D arrays of the same shape (output of the phase
+         retrieval), in the detector frame
+        :param initial_shape: shape of the FFT used for phasing
+        :param voxel_size: number or list of three user-defined voxel sizes for
+         the interpolation, in nm. If a single number is provided, the voxel size
+         will be identical in all directions.
+        :param fill_value: tuple of real numbers, fill_value parameter for the
+         RegularGridInterpolator, same length as the number of arrays
+        :param verbose: True to have printed comments
+        :param debugging: tuple of booleans of the same length as the number of
+         input arrays, True to show plots before and after interpolation
+        :param kwargs:
+
+         - 'cmap': str, name of the colormap
+         - 'title': tuple of strings, titles for the debugging plots, same length as
+           the number of arrays
+         - width_z: size of the area to plot in z (axis 0), centered on the middle of
+           the initial array
+         - width_y: size of the area to plot in y (axis 1), centered on the middle of
+           the initial array
+         - width_x: size of the area to plot in x (axis 2), centered on the middle of
+           the initial array
+
+        :return:
+
+         - an array (if a single array was provided) or a tuple of arrays interpolated
+           on an orthogonal grid (same length as the number of input arrays)
+         - a tuple of 3 voxels size for the interpolated arrays
+         - a numpy array of shape (3, 3): transformation matrix from the detector
+           frame to the laboratory/crystal frame
+
+        """
+        if isinstance(arrays, np.ndarray):
+            arrays = (arrays,)
+        valid.valid_ndarray(arrays, ndim=3)
+        current_shape = arrays[0].shape
+
+        transfer_matrix, voxel_size = self.get_transfer_matrix_labframe(
+            current_shape=current_shape,  # type: ignore
+            initial_shape=initial_shape,
+            voxel_size=voxel_size,
+            verbose=verbose,
+        )
+        output_arrays, voxel_size, transfer_matrix = self.interpolate_direct_space(
+            arrays=arrays,
+            current_shape=current_shape,
+            transfer_matrix=transfer_matrix,
+            voxel_size=voxel_size,
+            fill_value=fill_value,
+            verbose=verbose,
+            debugging=debugging,
+            **kwargs,
+        )
+
+        return output_arrays, voxel_size, transfer_matrix
+
+    def get_transfer_matrix_labframe(
+        self,
+        current_shape: Tuple[int, int, int],
+        initial_shape: Optional[Tuple[int, int, int]] = None,
+        voxel_size: Optional[Tuple[float, float, float]] = None,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, Tuple[float, float, float]]:
+        """
+        Calculate the transformation matrix in direct space, in the laboratory frame.
+
+        :param current_shape: shape of the output of phase retrieval. It could be
+         smaller than the shape used in phase retrieval, if the object was cropped
+         around the support.
+        :param initial_shape: shape of the FFT used for phasing
+        :param voxel_size: number or list of three user-defined voxel sizes for
+         the interpolation, in nm. If a single number is provided, the voxel size
+         will be identical in all directions.
+        :param verbose: True to have printed comments
+        :return:
+
+         - the transformation matrix as a numpy array of shape (3, 3)
+         - a tuple of 3 voxels size for the interpolated arrays
+
+        """
         #########################
         # check some parameters #
         #########################
-        valid.valid_container(
-            q_bragg,
-            container_types=(tuple, list, np.ndarray),
-            length=3,
-            item_types=Real,
-            name="q_bragg",
-        )
-        if np.linalg.norm(q_bragg) == 0:
-            raise ValueError("q_bragg should be a non zero vector")
-
-        if isinstance(fill_value, Real):
-            fill_value = (fill_value,) * nb_arrays
-        valid.valid_container(
-            fill_value,
-            container_types=(tuple, list, np.ndarray),
-            length=nb_arrays,
-            item_types=Real,
-            name="fill_value",
-        )
-        if isinstance(debugging, bool):
-            debugging = (debugging,) * nb_arrays
-        valid.valid_container(
-            debugging,
-            container_types=(tuple, list),
-            length=nb_arrays,
-            item_types=bool,
-            name="debugging",
-        )
-        q_com = np.array(q_bragg)
-        valid.valid_container(
-            reference_axis,
-            container_types=(tuple, list, np.ndarray),
-            length=3,
-            item_types=Real,
-            name="reference_axis",
-        )
-        reference_axis = np.array(reference_axis)
-        if not any(
-            (reference_axis == val).all()
-            for val in (np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1]))
-        ):
-            raise NotImplementedError(
-                "strain calculation along directions "
-                "other than array axes is not implemented"
-            )
-
         if not initial_shape:
-            initial_shape = input_shape
+            initial_shape = current_shape
         else:
             valid.valid_container(
                 initial_shape,
@@ -1946,11 +2024,11 @@ class Setup:
                 f" {dx_realspace:.2f} nm)"
             )
 
-        if input_shape != initial_shape:
+        if current_shape != initial_shape:
             # recalculate the tilt and pixel sizes to accomodate a shape change
-            tilt *= initial_shape[0] / input_shape[0]
-            pixel_y = self.detector.pixelsize_y * initial_shape[1] / input_shape[1]
-            pixel_x = self.detector.pixelsize_x * initial_shape[2] / input_shape[2]
+            tilt *= initial_shape[0] / current_shape[0]
+            pixel_y = self.detector.pixelsize_y * initial_shape[1] / current_shape[1]
+            pixel_x = self.detector.pixelsize_x * initial_shape[2] / current_shape[2]
             if verbose:
                 self.logger.info(
                     "Tilt, pixel_y, pixel_x based on the shape of the cropped array: "
@@ -1962,7 +2040,7 @@ class Setup:
             # sanity check, the direct space voxel sizes
             # calculated below should be equal to the original ones
             dz_realspace, dy_realspace, dx_realspace = self.voxel_sizes(
-                input_shape, tilt_angle=abs(tilt), pixel_x=pixel_x, pixel_y=pixel_y
+                current_shape, tilt_angle=abs(tilt), pixel_x=pixel_x, pixel_y=pixel_y
             )
             if verbose:
                 self.logger.info(
@@ -1975,45 +2053,191 @@ class Setup:
             pixel_y = self.detector.pixelsize_y
             pixel_x = self.detector.pixelsize_x
 
-        if not voxel_size:
+        if voxel_size is None:
             voxel_size = dz_realspace, dy_realspace, dx_realspace  # in nm
         else:
             if isinstance(voxel_size, Real):
                 voxel_size = (voxel_size, voxel_size, voxel_size)
-            if not isinstance(voxel_size, Sequence):
-                raise TypeError(
-                    "voxel size should be a sequence of three positive numbers in nm"
-                )
-            if len(voxel_size) != 3 or any(val <= 0 for val in voxel_size):
-                raise ValueError(
-                    "voxel_size should be a sequence of three positive numbers in nm"
-                )
+        valid.valid_container(
+            voxel_size,
+            container_types=tuple,
+            min_excluded=0,
+            length=3,
+            name="voxel_size",
+        )
 
         ######################################################################
         # calculate the transformation matrix based on the beamline geometry #
         ######################################################################
         transfer_matrix, _ = self.transformation_bcdi(
-            array_shape=input_shape,
+            array_shape=current_shape,
             tilt_angle=tilt,
             pixel_x=pixel_x,
             pixel_y=pixel_y,
             direct_space=True,
             verbose=verbose,
         )
+        return transfer_matrix, voxel_size
 
+    def get_transfer_matrix_crystal_frame(
+        self,
+        current_shape: Tuple[int, int, int],
+        q_bragg: np.ndarray,
+        reference_axis: Union[np.ndarray, Tuple[int, int, int]] = (0, 1, 0),
+        initial_shape: Optional[Tuple[int, int, int]] = None,
+        voxel_size: Optional[Tuple[float, float, float]] = None,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, Tuple[float, float, float]]:
+        """
+        Calculate the transformation matrix in direct space, in crystal frame.
+
+        :param current_shape: shape of the output of phase retrieval. It could be
+         smaller than the shape used in phase retrieval, if the object was cropped
+         around the support.
+        :param q_bragg: tuple of 3 vector components for the q values of the center
+         of mass of the Bragg peak, expressed in an orthonormal frame x y z
+        :param reference_axis: 3D vector along which q will be aligned, expressed in
+         an orthonormal frame x y z
+        :param initial_shape: shape of the FFT used for phasing
+        :param voxel_size: number or list of three user-defined voxel sizes for
+         the interpolation, in nm. If a single number is provided, the voxel size
+         will be identical in all directions.
+        :param verbose: True to have printed comments
+        :return:
+
+         - the transformation matrix as a numpy array of shape (3, 3)
+         - a tuple of 3 voxels size for the interpolated arrays
+
+        """
+        #########################
+        # check some parameters #
+        #########################
+        valid.valid_container(
+            q_bragg,
+            container_types=(tuple, list, np.ndarray),
+            length=3,
+            item_types=Real,
+            name="q_bragg",
+        )
+        if np.linalg.norm(q_bragg) == 0:
+            raise ValueError("q_bragg should be a non zero vector")
+        valid.valid_container(
+            reference_axis,
+            container_types=(tuple, list, np.ndarray),
+            length=3,
+            item_types=Real,
+            name="reference_axis",
+        )
+        if not any(
+            (np.array(reference_axis) == val).all()
+            for val in (np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1]))
+        ):
+            raise NotImplementedError(
+                "strain calculation along directions "
+                "other than array axes is not implemented"
+            )
+
+        q_com = np.array(q_bragg)
+        transfer_matrix, voxel_size = self.get_transfer_matrix_labframe(
+            current_shape=current_shape,
+            initial_shape=initial_shape,
+            voxel_size=voxel_size,
+            verbose=verbose,
+        )
         ################################################################################
         # calculate the rotation matrix from the crystal frame to the laboratory frame #
         ################################################################################
         # (inverse rotation to have reference_axis along q)
         rotation_matrix = util.rotation_matrix_3d(
-            axis_to_align=reference_axis, reference_axis=q_com / np.linalg.norm(q_com)
+            axis_to_align=np.array(reference_axis),
+            reference_axis=q_com / np.linalg.norm(q_com),
+        )
+        return np.matmul(rotation_matrix, transfer_matrix), voxel_size
+
+    def interpolate_direct_space(
+        self,
+        arrays: Union[np.ndarray, Tuple[np.ndarray, ...]],
+        current_shape: Tuple[int, ...],
+        transfer_matrix: np.ndarray,
+        voxel_size: Tuple[float, float, float],
+        fill_value: Tuple[float, ...],
+        verbose: bool,
+        debugging: Union[bool, Tuple[bool, ...]],
+        **kwargs,
+    ) -> Tuple[
+        Union[np.ndarray, List[np.ndarray]],
+        Tuple[float, float, float],
+        np.ndarray,
+    ]:
+        """
+        Interpolate arrays using the transfer matrix.
+
+        :param arrays: tuple of 3D arrays of the same shape (output of the phase
+         retrieval), in the detector frame
+        :param current_shape: shape of the output of phase retrieval. It could be
+         smaller than the shape used in phase retrieval, if the object was cropped
+         around the support.
+        :param transfer_matrix: the transformation matrix, numpy array of shape (3, 3)
+        :param voxel_size: number or list of three user-defined voxel sizes for
+         the interpolation, in nm. If a single number is provided, the voxel size
+         will be identical in all directions.
+        :param fill_value: tuple of real numbers, fill_value parameter for the
+         RegularGridInterpolator, same length as the number of arrays
+        :param verbose: True to have printed comments
+        :param debugging: tuple of booleans of the same length as the number of
+         input arrays, True to show plots before and after interpolation
+        :param kwargs:
+
+         - 'cmap': str, name of the colormap
+         - 'title': tuple of strings, titles for the debugging plots, same length as
+           the number of arrays
+         - width_z: size of the area to plot in z (axis 0), centered on the middle of
+           the initial array
+         - width_y: size of the area to plot in y (axis 1), centered on the middle of
+           the initial array
+         - width_x: size of the area to plot in x (axis 2), centered on the middle of
+           the initial array
+
+        :return:
+
+         - an array (if a single array was provided) or a tuple of arrays interpolated
+           on an orthogonal grid (same length as the number of input arrays)
+         - a tuple of 3 voxels size for the interpolated arrays
+         - a numpy array of shape (3, 3): transformation matrix from the detector
+           frame to the laboratory/crystal frame
+
+        """
+        #########################
+        # check some parameters #
+        #########################
+        if isinstance(arrays, np.ndarray):
+            arrays = (arrays,)
+        valid.valid_ndarray(arrays, ndim=3)
+        nb_arrays = len(arrays)
+        if isinstance(debugging, bool):
+            debugging = (debugging,) * nb_arrays
+        if isinstance(fill_value, (float, int)):
+            fill_value = (fill_value,) * nb_arrays
+        if len(fill_value) == 1:
+            fill_value *= nb_arrays
+        valid.valid_container(
+            fill_value,
+            container_types=(tuple, list, np.ndarray),
+            length=nb_arrays,
+            item_types=Real,
+            name="fill_value",
+        )
+        title = kwargs.get("title", ("Object",) * nb_arrays)
+        if isinstance(title, str):
+            title = (title,) * nb_arrays
+        valid.valid_container(
+            title,
+            container_types=(tuple, list),
+            length=nb_arrays,
+            item_types=str,
+            name="title",
         )
 
-        ################################################
-        # calculate the full transfer matrix including #
-        # the rotation into the crystal frame          #
-        ################################################
-        transfer_matrix = np.matmul(rotation_matrix, transfer_matrix)
         # transfer_matrix is the transformation matrix of the direct space coordinates
         # the spacing in the crystal frame is therefore given by the rows of the matrix
         d_along_x = np.linalg.norm(transfer_matrix[0, :])  # along x outboard
@@ -2027,9 +2251,9 @@ class Setup:
 
         # calculate the voxel coordinates of the data points in the laboratory frame
         myz, myy, myx = np.meshgrid(
-            np.arange(-input_shape[0] // 2, input_shape[0] // 2, 1),
-            np.arange(-input_shape[1] // 2, input_shape[1] // 2, 1),
-            np.arange(-input_shape[2] // 2, input_shape[2] // 2, 1),
+            np.arange(-current_shape[0] // 2, current_shape[0] // 2, 1),
+            np.arange(-current_shape[1] // 2, current_shape[1] // 2, 1),
+            np.arange(-current_shape[2] // 2, current_shape[2] // 2, 1),
             indexing="ij",
         )
 
@@ -2108,9 +2332,9 @@ class Setup:
         for idx, array in enumerate(arrays):
             rgi = RegularGridInterpolator(
                 (
-                    np.arange(-input_shape[0] // 2, input_shape[0] // 2, 1),
-                    np.arange(-input_shape[1] // 2, input_shape[1] // 2, 1),
-                    np.arange(-input_shape[2] // 2, input_shape[2] // 2, 1),
+                    np.arange(-current_shape[0] // 2, current_shape[0] // 2, 1),
+                    np.arange(-current_shape[1] // 2, current_shape[1] // 2, 1),
+                    np.arange(-current_shape[2] // 2, current_shape[2] // 2, 1),
                 ),
                 array,
                 method="linear",
@@ -2135,9 +2359,9 @@ class Setup:
                 gu.multislices_plot(
                     abs(array),
                     sum_frames=False,
-                    width_z=width_z,
-                    width_y=width_y,
-                    width_x=width_x,
+                    width_z=kwargs.get("width_z"),
+                    width_y=kwargs.get("width_y"),
+                    width_x=kwargs.get("width_x"),
                     reciprocal_space=False,
                     is_orthogonal=False,
                     scale="linear",
@@ -2148,9 +2372,9 @@ class Setup:
                 gu.multislices_plot(
                     abs(ortho_array),
                     sum_frames=False,
-                    width_z=width_z,
-                    width_y=width_y,
-                    width_x=width_x,
+                    width_z=kwargs.get("width_z"),
+                    width_y=kwargs.get("width_y"),
+                    width_x=kwargs.get("width_x"),
                     reciprocal_space=False,
                     is_orthogonal=True,
                     scale="linear",
@@ -2664,6 +2888,11 @@ class Setup:
          - the q offset (3D vector) if direct_space is False.
 
         """
+        if not isinstance(self.beamline, BeamlineGoniometer):
+            raise TypeError(
+                "transformation_bcdi supports only for beamlines with goniometer, "
+                f"got {type(self.beamline)}"
+            )
         if verbose:
             self.logger.info(
                 f"out-of plane detector angle={self.outofplane_angle:.3f} deg, "
@@ -2737,6 +2966,11 @@ class Setup:
            region of interest and binning.
 
         """
+        if not isinstance(self.beamline, BeamlineSaxs):
+            raise TypeError(
+                "transformation_cdi supports only for SAXS beamlines, "
+                f"got {type(self.beamline)}"
+            )
         #########################
         # check some parameters #
         #########################
@@ -2866,7 +3100,7 @@ class Setup:
         # calculate the number of voxels needed to accomodate the gridded data
         maxbins: List[int] = []
         for dim in (old_qx, old_qz, old_qy):
-            maxstep = max((abs(np.diff(dim, axis=j)).max() for j in range(3)))
+            maxstep = max(abs(np.diff(dim, axis=j)).max() for j in range(3))
             maxbins.append(int(abs(dim.max() - dim.min()) / maxstep))
         self.logger.info(
             f"Maximum number of bins based on the sampling in q: {maxbins}"

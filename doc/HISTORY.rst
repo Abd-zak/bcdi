@@ -1,12 +1,54 @@
-Future:
--------
+Version 0.3.1:
+--------------
+
+* Update dependencies.
+
+* Allow the config parameter 'frames_pattern' to be a list containing only the indices
+  of the detector frames to skip.
+
+Version 0.3.0:
+--------------
+
+* `bcdi_utils.find_bragg`: a parameter name in the function signature was change from
+  "roi" to "region_of_interest", therefore the region of interest was not taken into
+  account anymore when calculating the peak position.
+
+* Postprocessing: fix bragg peak calculation for energy scans.
+
+* Postprocessing: raise NotImplementedError for energy scans not interpolated during
+  preprocessing.
+
+Version 0.2.9:
+--------------
+
+* Add support for Python3.10 and update dependencies.
+
+* Refactor the function `bcdi_utils.center_fft` in separate classes using
+  inheritance.
+
+* Split `setup.ortho_directspace` into methods to get the transformation matrix in the
+  laboratory frame or crystal frame. Implement `setup.ortho_directspace_labframe`.
+
+* Create a new script `postprocessing/bcdi_orthogonalization.py`, which only
+  interpolates the output of phase retrieval (no processing on the phase)
+
+* Remove temporal couping in the initialization of the Setup instance. Set the paths,
+  create the logfile and read it directly in `setup.__init__`.
+
+* Create classes Analysis, PreprocessingLoader and InteractiveMasker for preprocessing.
+  Refactor `preprocessing.process_scan` to use these classes.
+
+* Add support for ESRF BM02 beamline (th rocking curve).
+
+* Create classes Analysis, PhaseManipulator and InterpolatedCrystal for postprocessing.
+  Refactor `postprocessing.process_scan` to use these classes.
 
 * Remove the deprecated parameter 'fix_size'. THe same functionality can be obtained by
- using the set of parameters `roi_detector`, `center_roi_x` and `center_roi_y`.
+  using the set of parameters `roi_detector`, `center_roi_x` and `center_roi_y`.
 
 * Previously the functionalities regarding Bragg peak finding, rocking curve fitting and
- plotting were located in tightly binded functions. A class PeakFinder is implemented to
- gather these functionalities and manage its own state properly.
+  plotting were located in tightly binded functions. A class PeakFinder is implemented to
+  gather these functionalities and manage its own state properly.
 
 * Add unit tests to postprocessing_utils.find_datarange and make it dimension-agnostic.
 

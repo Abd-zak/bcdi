@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 #
 # BCDI documentation build configuration file, created by
 # sphinx-quickstart on Wed Apr 24 10:57:29 2019.
@@ -22,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))
 
-from bcdi import __version__
+from bcdi import __version__  # noqa: E402
 
 # -- General configuration ------------------------------------------------
 # Add any Sphinx extension module names here, as strings. They can be
@@ -62,7 +61,7 @@ release = __version__
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = "en"
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -76,6 +75,7 @@ pygments_style = "sphinx"
 todo_include_todos = False
 
 autodoc_mock_imports = [
+    "colorcet",
     "ipywidgets",
     "numpy",
     "pandas",
@@ -91,6 +91,8 @@ autodoc_mock_imports = [
     "lmfit",
     "moviepy",
     "mpl_toolkits",
+    "PIL",
+    "yaml",
 ]
 # -- Options for HTML output ----------------------------------------------
 
@@ -153,6 +155,13 @@ latex_documents = [
     (main_doc, "BCDI.tex", "BCDI Documentation", "Jerome Carnis", "manual"),
 ]
 
+# Options for link check
+linkcheck_ignore = [r"https://doi.org/.+"]
+linkcheck_allowed_redirects = {
+    # All HTTP redirections from the source URI to the canonical URI
+    # will be treated as "working".
+    r"https://youtu.be/.+": r"https://www.youtube.com/watch?v=.+"
+}
 
 # -- Options for manual page output ---------------------------------------
 

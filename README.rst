@@ -1,7 +1,7 @@
 .. image:: https://readthedocs.org/projects/bcdi/badge/?version=latest
    :target: https://bcdi.readthedocs.io/en/latest/?badge=latest
    :alt: Documentation Status
-.. image:: https://img.shields.io/github/workflow/status/carnisj/bcdi/python-package-3.9?logo=GitHub
+.. image:: https://img.shields.io/github/actions/workflow/status/carnisj/bcdi/pr_lint_test.yml?logo=GitHub
    :alt: GitHub Workflow Status
 .. image:: https://deepsource.io/gh/carnisj/bcdi.svg/?label=active+issues&show_trend=true&token=N3Z0cklmQrG8kzZOVwGJhLd9
 .. image:: https://img.shields.io/pypi/pyversions/bcdi?logo=PyPI&logoColor=%23FFFF00
@@ -124,6 +124,9 @@ installation.
 
 Note that there are issues with installing scikit-image within an Anaconda environment.
 In such situation, the workaround is to create instead a virtual environment using pip.
+
+If you want to contribute to bcdi development, install also extra dependencies:
+``python -m pip install bcdi[dev]``
 
 Please send feedback in `GitHub issues <https://github.com/carnisj/bcdi/issues>`_.
 
